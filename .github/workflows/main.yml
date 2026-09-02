@@ -40,7 +40,7 @@ jobs:
             -Value 0 `
             -Force
 
-          # Remove previous firewall rule if it exists
+          # Remove existing firewall rule
           Remove-NetFirewallRule `
             -DisplayName "RDP-Tailscale" `
             -ErrorAction SilentlyContinue
@@ -53,12 +53,13 @@ jobs:
             -Protocol TCP `
             -LocalPort 3389
 
-          # Restart Remote Desktop service
+          # Restart RDP service
           Restart-Service `
             -Name TermService `
             -Force
 
           Write-Host "RDP configuration completed."
+
 
       # ============================================================
       # 2. CREATE RDP USER
@@ -70,7 +71,7 @@ jobs:
           $username = "${{ secrets.RDP_USERNAME }}"
           $password = "${{ secrets.RDP_PASSWORD }}"
 
-          # Verify secrets
+          # Check secrets
           if (
               [string]::IsNullOrWhiteSpace($username) -or
               [string]::IsNullOrWhiteSpace($password)
@@ -79,7 +80,6 @@ jobs:
               exit 1
           }
 
-          # Convert password to SecureString
           $securePass = ConvertTo-SecureString `
             $password `
             -AsPlainText `
@@ -124,6 +124,7 @@ jobs:
 
           Write-Host "RDP user configured successfully."
 
+
       # ============================================================
       # 3. INSTALL TAILSCALE
       # ============================================================
@@ -142,10 +143,16 @@ jobs:
 
           Write-Host "Installing Tailscale..."
 
-          Start-Process `
+          $process = Start-Process `
             msiexec.exe `
             -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
-            -Wait
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+              Write-Error "Tailscale installation failed. Exit code: $($process.ExitCode)"
+              exit 1
+          }
 
           Remove-Item `
             $installerPath `
@@ -153,6 +160,7 @@ jobs:
             -ErrorAction SilentlyContinue
 
           Write-Host "Tailscale installation completed."
+
 
       # ============================================================
       # 4. CONNECT TAILSCALE
@@ -181,7 +189,7 @@ jobs:
 
           Write-Host "Tailscale connection successful."
 
-          # Wait for IPv4 address
+          # Get Tailscale IPv4 address
           $tsIP = $null
 
           for ($i = 1; $i -le 12; $i++) {
@@ -207,15 +215,16 @@ jobs:
 
           Write-Host "Tailscale IP: $tsIP"
 
-          # Make IP available to later steps
+          # Make IP available to following steps
           "TAILSCALE_IP=$tsIP" |
             Out-File `
               -FilePath $env:GITHUB_ENV `
               -Append `
               -Encoding utf8
 
+
       # ============================================================
-      # 5. VERIFY RDP PORT
+      # 5. VERIFY RDP
       # ============================================================
       - name: Verify RDP Accessibility
         shell: powershell
@@ -232,12 +241,12 @@ jobs:
           if (-not $testResult.TcpTestSucceeded) {
 
               Write-Error "TCP connection to RDP port 3389 failed."
-
               exit 1
           }
 
           Write-Host "RDP TCP port 3389 is accessible."
           Write-Host "RDP server is ready."
+
 
       # ============================================================
       # 6. SEND RDP READY MESSAGE TO TELEGRAM
@@ -250,39 +259,45 @@ jobs:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
         run: |
 
-          $messageLines = @(
-              "🟢 RDP SERVER ONLINE"
+          # Unicode characters generated safely inside PowerShell
+          $rocket = [char]::ConvertFromUtf32(0x1F680)
+          $green = [char]::ConvertFromUtf32(0x1F7E2)
+          $computer = [char]::ConvertFromUtf32(0x1F5A5)
+          $globe = [char]::ConvertFromUtf32(0x1F310)
+          $plug = [char]::ConvertFromUtf32(0x1F50C)
+          $userIcon = [char]::ConvertFromUtf32(0x1F464)
+
+          $message = @(
+              "$green RDP SERVER ONLINE"
               ""
-              "━━━━━━━━━━━━━━━━━━"
+              "=============================="
               ""
-              "🖥️ Server"
+              "$computer Server"
               "gh-runner-$env:GITHUB_RUN_ID"
               ""
-              "🌐 Tailscale IP"
+              "$globe Tailscale IP"
               "$env:TAILSCALE_IP"
               ""
-              "🔌 RDP Port"
+              "$plug RDP Port"
               "3389"
               ""
-              "👤 Username"
+              "$userIcon Username"
               "$env:RDP_USERNAME"
               ""
-              "⏱️ Maximum Runtime"
+              "Maximum Runtime"
               "6 Hours"
               ""
-              "📦 Repository"
+              "Repository"
               "$env:GITHUB_REPOSITORY"
               ""
-              "🔢 Run ID"
+              "Run ID"
               "$env:GITHUB_RUN_ID"
               ""
-              "🟢 Status"
+              "$green Status"
               "READY"
               ""
-              "━━━━━━━━━━━━━━━━━━"
-          )
-
-          $message = $messageLines -join "`n"
+              "=============================="
+          ) -join "`n"
 
           Write-Host "Sending RDP notification to Telegram..."
 
@@ -294,9 +309,6 @@ jobs:
                 text = $message
             }
 
-          Write-Host "Telegram API response:"
-          $response | ConvertTo-Json -Depth 10
-
           if (-not $response.ok) {
               Write-Error "Telegram API rejected the message."
               exit 1
@@ -304,17 +316,15 @@ jobs:
 
           Write-Host "RDP notification sent successfully."
 
+
       # ============================================================
-      # 7. RDP DASHBOARD + KEEP ALIVE
+      # 7. DASHBOARD + KEEP ALIVE
       # ============================================================
       - name: Maintain Connection & Dashboard
         shell: powershell
         run: |
 
-          # --------------------------------------------------------
           # Hardware information
-          # --------------------------------------------------------
-
           $cpu = (
               Get-CimInstance Win32_Processor
           ).Name
@@ -340,42 +350,33 @@ jobs:
               2
           )
 
-          # --------------------------------------------------------
-          # Dashboard
-          # --------------------------------------------------------
-
           Write-Host ""
           Write-Host "=================================================="
-          Write-Host "🚀 GITHUB RUNNER RDP DASHBOARD"
+          Write-Host "GITHUB RUNNER RDP DASHBOARD"
           Write-Host "=================================================="
-          Write-Host "🔐 CONNECTION DETAILS"
-          Write-Host "   Address  : $env:TAILSCALE_IP"
-          Write-Host "   Username : [HIDDEN]"
-          Write-Host "   Password : [HIDDEN]"
+          Write-Host "CONNECTION DETAILS"
+          Write-Host "Address  : $env:TAILSCALE_IP"
+          Write-Host "Username : [HIDDEN]"
+          Write-Host "Password : [HIDDEN]"
           Write-Host "--------------------------------------------------"
-          Write-Host "💻 SYSTEM SPECS"
-          Write-Host "   OS       : Windows Server"
-          Write-Host "   CPU      : $cpu"
-          Write-Host "   RAM      : ${ram} GB"
-          Write-Host "   Storage  : ${freeSpace} GB Free / ${totalSpace} GB Total"
+          Write-Host "SYSTEM SPECS"
+          Write-Host "OS       : Windows Server"
+          Write-Host "CPU      : $cpu"
+          Write-Host "RAM      : ${ram} GB"
+          Write-Host "Storage  : ${freeSpace} GB Free / ${totalSpace} GB Total"
           Write-Host "--------------------------------------------------"
-          Write-Host "⚠️ LIMIT: Job will terminate after 6 hours."
+          Write-Host "LIMIT: Job will terminate after 6 hours."
           Write-Host "=================================================="
           Write-Host ""
 
-          # Start uptime timer
           $startTime = Get-Date
-
-          # --------------------------------------------------------
-          # Continuous monitoring
-          # --------------------------------------------------------
 
           while ($true) {
 
               # UTC time
               $utcNow = (Get-Date).ToUniversalTime()
 
-              # India Standard Time
+              # IST
               $istZone = [System.TimeZoneInfo]::FindSystemTimeZoneById(
                   "India Standard Time"
               )
@@ -393,7 +394,7 @@ jobs:
 
               $uptimeStr = "{0:hh\:mm\:ss}" -f $uptime
 
-              # CPU usage
+              # CPU
               $cpuLoad = (
                   Get-CimInstance Win32_Processor |
                   Measure-Object `
@@ -401,7 +402,7 @@ jobs:
                     -Average
               ).Average
 
-              # RAM usage
+              # RAM
               $osInfo = Get-CimInstance Win32_OperatingSystem
 
               $freeRam = [math]::Round(
@@ -422,7 +423,7 @@ jobs:
                   1
               )
 
-              # HTTPS keep-alive
+              # HTTPS request
               Invoke-WebRequest `
                 -Uri "https://8.8.8.8" `
                 -UseBasicParsing `
@@ -430,16 +431,15 @@ jobs:
                 -ErrorAction SilentlyContinue |
                 Out-Null
 
-              # Live status
               Write-Host `
-                "[⌚ $utcStr | 🌍 $istStr] " +
-                "⏱️ Uptime: $uptimeStr | " +
-                "📊 CPU: ${cpuLoad}% | " +
-                "🧠 RAM Used: ${ramUsagePercent}%"
+                "[UTC $utcStr | IST $istStr] " +
+                "Uptime: $uptimeStr | " +
+                "CPU: ${cpuLoad}% | " +
+                "RAM Used: ${ramUsagePercent}%"
 
-              # Update every 5 minutes
               Start-Sleep -Seconds 300
           }
+
 
       # ============================================================
       # 8. CLEANUP
