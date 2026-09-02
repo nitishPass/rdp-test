@@ -13,7 +13,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE="🚀 Telegram Bot Connected\n\nRepository: $GITHUB_REPOSITORY\nRun ID: $GITHUB_RUN_ID\nStatus: Online"
+          MESSAGE=$(printf '🚀 Telegram Bot Connected\n\nRepository: %s\nRun ID: %s\nStatus: Online' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
 
           RESPONSE=$(curl -sS -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
