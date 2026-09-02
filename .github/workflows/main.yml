@@ -1,40 +1,25 @@
-name: RDP
+name: Telegram Bot Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 360
+  telegram-test:
+    runs-on: ubuntu-latest
 
     steps:
-
-      - name: Test Telegram Bot
-        shell: powershell
+      - name: Send Telegram Test Message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          $message = @"
-🚀 Telegram Bot Connected
+          MESSAGE="🚀 Telegram Bot Connected
 
-Repository:
-${{ github.repository }}
+Repository: $GITHUB_REPOSITORY
+Run ID: $GITHUB_RUN_ID
+Status: Online"
 
-Run:
-${{ github.run_id }}
-
-Status:
-Online
-"@
-
-          Invoke-RestMethod `
-            -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
-            -Method Post `
-            -Body @{
-              chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
-              text = $message
-            }
-
-      - name: Configure Core RDP Settings
-        shell: powershell
-        run: |
-          # Your existing RDP code here
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}"
