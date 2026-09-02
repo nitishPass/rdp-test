@@ -6,46 +6,106 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
+
+    # 360 minutes = 6 hours
     timeout-minutes: 360
 
     steps:
 
       # ============================================================
-      # 1. CONFIGURE CORE RDP SETTINGS
+      # 01 - INITIALIZE RUNNER
       # ============================================================
-      - name: Configure Core RDP Settings
+      - name: "01 | Initialize Runner"
         shell: powershell
         run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 GITHUB RDP SERVER"
+          Write-Host "============================================================"
+          Write-Host ""
 
-          Write-Host "Configuring Remote Desktop..."
+          $computer = Get-CimInstance Win32_ComputerSystem
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cpu = Get-CimInstance Win32_Processor
 
-          # Enable Remote Desktop
+          $hostname = $env:COMPUTERNAME
+          $cpuName = ($cpu | Select-Object -First 1).Name
+          $cores = ($cpu | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+
+          $ramGB = [math]::Round(
+              $computer.TotalPhysicalMemory / 1GB,
+              2
+          )
+
+          Write-Host "[RUNNER]"
+          Write-Host "  Hostname       : $hostname"
+          Write-Host "  Repository     : $env:GITHUB_REPOSITORY"
+          Write-Host "  Run ID         : $env:GITHUB_RUN_ID"
+          Write-Host "  OS             : $($os.Caption)"
+          Write-Host "  Architecture   : $($os.OSArchitecture)"
+          Write-Host "  CPU            : $cpuName"
+          Write-Host "  Logical Cores  : $cores"
+          Write-Host "  RAM            : $ramGB GB"
+          Write-Host ""
+
+          Write-Host "[STORAGE]"
+
+          $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+
+          foreach ($disk in $disks) {
+              $free = [math]::Round($disk.FreeSpace / 1GB, 2)
+              $total = [math]::Round($disk.Size / 1GB, 2)
+
+              Write-Host "  $($disk.DeviceID)  : $free GB free / $total GB total"
+          }
+
+          Write-Host ""
+          Write-Host "[WORKFLOW]"
+          Write-Host "  Maximum Runtime : 6 Hours"
+          Write-Host "  Status          : INITIALIZED"
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host ""
+
+      # ============================================================
+      # 02 - CONFIGURE RDP
+      # ============================================================
+      - name: "02 | Configure RDP"
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 RDP CONFIGURATION"
+          Write-Host "============================================================"
+
+          Write-Host "[1/4] Enabling Remote Desktop..."
+
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" `
             -Value 0 `
             -Force
 
-          # Disable Network Level Authentication
+          Write-Host "[2/4] Configuring RDP authentication..."
+
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" `
             -Value 0 `
             -Force
 
-          # RDP Security Layer
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "SecurityLayer" `
             -Value 0 `
             -Force
 
-          # Remove existing firewall rule
+          Write-Host "[3/4] Configuring firewall..."
+
           Remove-NetFirewallRule `
             -DisplayName "RDP-Tailscale" `
             -ErrorAction SilentlyContinue
 
-          # Allow TCP 3389
           New-NetFirewallRule `
             -DisplayName "RDP-Tailscale" `
             -Direction Inbound `
@@ -53,46 +113,59 @@ jobs:
             -Protocol TCP `
             -LocalPort 3389
 
-          # Restart RDP service
+          Write-Host "[4/4] Restarting Remote Desktop service..."
+
           Restart-Service `
             -Name TermService `
             -Force
 
-          Write-Host "RDP configuration completed."
-
+          Write-Host ""
+          Write-Host "RDP Status : CONFIGURED"
+          Write-Host "RDP Port   : 3389"
+          Write-Host "Status     : SUCCESS"
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 2. CREATE RDP USER
+      # 03 - CREATE RDP USER
       # ============================================================
-      - name: Create Secure RDP User
+      - name: "03 | Create RDP User"
         shell: powershell
+        env:
+          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                  RDP USER CONFIGURATION"
+          Write-Host "============================================================"
 
-          $username = "${{ secrets.RDP_USERNAME }}"
-          $password = "${{ secrets.RDP_PASSWORD }}"
+          $username = $env:RDP_USERNAME
+          $password = $env:RDP_PASSWORD
 
-          # Check secrets
           if (
               [string]::IsNullOrWhiteSpace($username) -or
               [string]::IsNullOrWhiteSpace($password)
           ) {
-              Write-Error "RDP_USERNAME or RDP_PASSWORD secret is missing!"
+              Write-Error "RDP_USERNAME or RDP_PASSWORD secret is missing."
               exit 1
           }
+
+          Write-Host "Checking RDP account..."
 
           $securePass = ConvertTo-SecureString `
             $password `
             -AsPlainText `
             -Force
 
-          # Check whether user already exists
           $existingUser = Get-LocalUser `
             -Name $username `
             -ErrorAction SilentlyContinue
 
           if ($existingUser) {
 
-              Write-Host "RDP user already exists."
+              Write-Host "Account already exists."
+              Write-Host "Updating account password..."
 
               Set-LocalUser `
                 -Name $username `
@@ -101,7 +174,7 @@ jobs:
           }
           else {
 
-              Write-Host "Creating RDP user..."
+              Write-Host "Creating RDP account..."
 
               New-LocalUser `
                 -Name $username `
@@ -110,27 +183,37 @@ jobs:
                 -PasswordNeverExpires
           }
 
-          # Add to Administrators
+          Write-Host "Adding account to Administrators..."
+
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          # Add to Remote Desktop Users
+          Write-Host "Adding account to Remote Desktop Users..."
+
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
             -Member $username `
             -ErrorAction SilentlyContinue
 
-          Write-Host "RDP user configured successfully."
-
+          Write-Host ""
+          Write-Host "Username : [HIDDEN]"
+          Write-Host "Password : [HIDDEN]"
+          Write-Host "Status   : USER CONFIGURED"
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 3. INSTALL TAILSCALE
+      # 04 - INSTALL TAILSCALE
       # ============================================================
-      - name: Install Tailscale
+      - name: "04 | Install Tailscale"
         shell: powershell
         run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                   TAILSCALE INSTALLATION"
+          Write-Host "============================================================"
 
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -140,6 +223,11 @@ jobs:
           Invoke-WebRequest `
             -Uri $tsUrl `
             -OutFile $installerPath
+
+          if (-not (Test-Path $installerPath)) {
+              Write-Error "Tailscale installer was not downloaded."
+              exit 1
+          }
 
           Write-Host "Installing Tailscale..."
 
@@ -159,37 +247,63 @@ jobs:
             -Force `
             -ErrorAction SilentlyContinue
 
-          Write-Host "Tailscale installation completed."
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
+          if (-not (Test-Path $tailscale)) {
+              Write-Error "Tailscale executable was not found after installation."
+              exit 1
+          }
+
+          $version = & $tailscale version | Select-Object -First 1
+
+          Write-Host ""
+          Write-Host "Tailscale : INSTALLED"
+          Write-Host "Version   : $version"
+          Write-Host "Status    : SUCCESS"
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 4. CONNECT TAILSCALE
+      # 05 - CONNECT TAILSCALE
       # ============================================================
-      - name: Establish Tailscale Connection
+      - name: "05 | Connect Tailscale"
         shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                  TAILSCALE CONNECTION"
+          Write-Host "============================================================"
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
           if (-not (Test-Path $tailscale)) {
-              Write-Error "Tailscale executable not found!"
+              Write-Error "Tailscale executable not found."
               exit 1
           }
 
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+              Write-Error "TAILSCALE_AUTH_KEY secret is missing."
+              exit 1
+          }
+
+          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
+
+          Write-Host "Hostname : $hostname"
           Write-Host "Connecting to Tailscale..."
 
           & $tailscale up `
-            --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" `
-            --hostname="gh-runner-$env:GITHUB_RUN_ID"
+            --authkey="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="$hostname"
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error "Tailscale failed to connect."
               exit 1
           }
 
-          Write-Host "Tailscale connection successful."
+          Write-Host "Tailscale connection established."
 
-          # Get Tailscale IPv4 address
           $tsIP = $null
 
           for ($i = 1; $i -le 12; $i++) {
@@ -204,7 +318,6 @@ jobs:
               }
 
               Write-Host "Waiting for Tailscale IP... Attempt $i/12"
-
               Start-Sleep -Seconds 5
           }
 
@@ -213,25 +326,37 @@ jobs:
               exit 1
           }
 
-          Write-Host "Tailscale IP: $tsIP"
-
-          # Make IP available to following steps
           "TAILSCALE_IP=$tsIP" |
             Out-File `
               -FilePath $env:GITHUB_ENV `
               -Append `
               -Encoding utf8
 
+          Write-Host ""
+          Write-Host "TAILSCALE"
+          Write-Host "  Status   : CONNECTED"
+          Write-Host "  IPv4     : $tsIP"
+          Write-Host "  Hostname : $hostname"
+          Write-Host ""
+          Write-Host "Status : SUCCESS"
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 5. VERIFY RDP
+      # 06 - VERIFY RDP
       # ============================================================
-      - name: Verify RDP Accessibility
+      - name: "06 | Verify RDP"
         shell: powershell
         run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                    RDP CONNECTIVITY TEST"
+          Write-Host "============================================================"
 
-          Write-Host "Testing RDP connectivity..."
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "Target IP : $env:TAILSCALE_IP"
+          Write-Host "Port      : 3389"
+          Write-Host ""
+          Write-Host "Testing TCP connectivity..."
 
           $testResult = Test-NetConnection `
             -ComputerName $env:TAILSCALE_IP `
@@ -239,144 +364,76 @@ jobs:
             -WarningAction SilentlyContinue
 
           if (-not $testResult.TcpTestSucceeded) {
-
               Write-Error "TCP connection to RDP port 3389 failed."
               exit 1
           }
 
-          Write-Host "RDP TCP port 3389 is accessible."
-          Write-Host "RDP server is ready."
-
+          Write-Host ""
+          Write-Host "RDP Port : ACCESSIBLE"
+          Write-Host "TCP Test : SUCCESS"
+          Write-Host "Status   : RDP SERVER READY"
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 6. SEND RDP READY MESSAGE TO TELEGRAM
+      # 07 - RDP READY SUMMARY
       # ============================================================
-      - name: Send RDP Ready Notification
+      - name: "07 | RDP Ready Summary"
         shell: powershell
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
         run: |
-
-          # Unicode characters generated safely inside PowerShell
-          $rocket = [char]::ConvertFromUtf32(0x1F680)
-          $green = [char]::ConvertFromUtf32(0x1F7E2)
-          $computer = [char]::ConvertFromUtf32(0x1F5A5)
-          $globe = [char]::ConvertFromUtf32(0x1F310)
-          $plug = [char]::ConvertFromUtf32(0x1F50C)
-          $userIcon = [char]::ConvertFromUtf32(0x1F464)
-
-          $message = @(
-              "$green RDP SERVER ONLINE"
-              ""
-              "=============================="
-              ""
-              "$computer Server"
-              "gh-runner-$env:GITHUB_RUN_ID"
-              ""
-              "$globe Tailscale IP"
-              "$env:TAILSCALE_IP"
-              ""
-              "$plug RDP Port"
-              "3389"
-              ""
-              "$userIcon Username"
-              "$env:RDP_USERNAME"
-              ""
-              "Maximum Runtime"
-              "6 Hours"
-              ""
-              "Repository"
-              "$env:GITHUB_REPOSITORY"
-              ""
-              "Run ID"
-              "$env:GITHUB_RUN_ID"
-              ""
-              "$green Status"
-              "READY"
-              ""
-              "=============================="
-          ) -join "`n"
-
-          Write-Host "Sending RDP notification to Telegram..."
-
-          $response = Invoke-RestMethod `
-            -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" `
-            -Method Post `
-            -Body @{
-                chat_id = $env:TELEGRAM_CHAT_ID
-                text = $message
-            }
-
-          if (-not $response.ok) {
-              Write-Error "Telegram API rejected the message."
-              exit 1
-          }
-
-          Write-Host "RDP notification sent successfully."
-
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 RDP SERVER IS READY"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "[CONNECTION]"
+          Write-Host "  Address  : $env:TAILSCALE_IP"
+          Write-Host "  Port     : 3389"
+          Write-Host "  Username : [HIDDEN]"
+          Write-Host "  Password : [HIDDEN]"
+          Write-Host ""
+          Write-Host "[TAILSCALE]"
+          Write-Host "  Status   : CONNECTED"
+          Write-Host "  IPv4     : $env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "[WORKFLOW]"
+          Write-Host "  Repository     : $env:GITHUB_REPOSITORY"
+          Write-Host "  Run ID         : $env:GITHUB_RUN_ID"
+          Write-Host "  Maximum Runtime: 6 Hours"
+          Write-Host ""
+          Write-Host "  STATUS         : ONLINE"
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host ""
 
       # ============================================================
-      # 7. DASHBOARD + KEEP ALIVE
+      # 08 - LIVE MONITOR
       # ============================================================
-      - name: Maintain Connection & Dashboard
+      - name: "08 | RDP Live Monitor"
         shell: powershell
         run: |
 
-          # Hardware information
-          $cpu = (
-              Get-CimInstance Win32_Processor
-          ).Name
-
-          $ram = [math]::Round(
-              (
-                  Get-CimInstance Win32_ComputerSystem
-              ).TotalPhysicalMemory / 1GB,
-              2
-          )
-
-          $disk = Get-CimInstance `
-            Win32_LogicalDisk `
-            -Filter "DeviceID='C:'"
-
-          $freeSpace = [math]::Round(
-              $disk.FreeSpace / 1GB,
-              2
-          )
-
-          $totalSpace = [math]::Round(
-              $disk.Size / 1GB,
-              2
-          )
-
           Write-Host ""
-          Write-Host "=================================================="
-          Write-Host "GITHUB RUNNER RDP DASHBOARD"
-          Write-Host "=================================================="
-          Write-Host "CONNECTION DETAILS"
-          Write-Host "Address  : $env:TAILSCALE_IP"
-          Write-Host "Username : [HIDDEN]"
-          Write-Host "Password : [HIDDEN]"
-          Write-Host "--------------------------------------------------"
-          Write-Host "SYSTEM SPECS"
-          Write-Host "OS       : Windows Server"
-          Write-Host "CPU      : $cpu"
-          Write-Host "RAM      : ${ram} GB"
-          Write-Host "Storage  : ${freeSpace} GB Free / ${totalSpace} GB Total"
-          Write-Host "--------------------------------------------------"
-          Write-Host "LIMIT: Job will terminate after 6 hours."
-          Write-Host "=================================================="
+          Write-Host "============================================================"
+          Write-Host "                    LIVE SYSTEM MONITOR"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "Updates every 5 minutes."
+          Write-Host "Workflow maximum runtime: 6 hours."
           Write-Host ""
 
           $startTime = Get-Date
 
           while ($true) {
 
-              # UTC time
-              $utcNow = (Get-Date).ToUniversalTime()
+              # ----------------------------------------------------
+              # TIME
+              # ----------------------------------------------------
+              $now = Get-Date
+              $utcNow = $now.ToUniversalTime()
 
-              # IST
               $istZone = [System.TimeZoneInfo]::FindSystemTimeZoneById(
                   "India Standard Time"
               )
@@ -386,15 +443,19 @@ jobs:
                   $istZone
               )
 
-              $utcStr = $utcNow.ToString("HH:mm:ss 'UTC'")
-              $istStr = $istNow.ToString("hh:mm:ss tt 'IST'")
+              $utcStr = $utcNow.ToString("HH:mm:ss")
+              $istStr = $istNow.ToString("HH:mm:ss")
 
-              # Uptime
-              $uptime = (Get-Date) - $startTime
+              # ----------------------------------------------------
+              # UPTIME
+              # ----------------------------------------------------
+              $uptime = $now - $startTime
 
               $uptimeStr = "{0:hh\:mm\:ss}" -f $uptime
 
+              # ----------------------------------------------------
               # CPU
+              # ----------------------------------------------------
               $cpuLoad = (
                   Get-CimInstance Win32_Processor |
                   Measure-Object `
@@ -402,7 +463,11 @@ jobs:
                     -Average
               ).Average
 
+              $cpuLoad = [math]::Round($cpuLoad, 1)
+
+              # ----------------------------------------------------
               # RAM
+              # ----------------------------------------------------
               $osInfo = Get-CimInstance Win32_OperatingSystem
 
               $freeRam = [math]::Round(
@@ -415,41 +480,92 @@ jobs:
                   2
               )
 
+              $ramUsed = $totalRam - $freeRam
+
               $ramUsagePercent = [math]::Round(
-                  (
-                      ($totalRam - $freeRam) /
-                      $totalRam
-                  ) * 100,
+                  ($ramUsed / $totalRam) * 100,
                   1
               )
 
-              # HTTPS request
-              Invoke-WebRequest `
-                -Uri "https://8.8.8.8" `
-                -UseBasicParsing `
-                -TimeoutSec 3 `
-                -ErrorAction SilentlyContinue |
-                Out-Null
+              # ----------------------------------------------------
+              # STORAGE
+              # ----------------------------------------------------
+              $storageStatus = @()
+
+              $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+
+              foreach ($disk in $disks) {
+
+                  $free = [math]::Round(
+                      $disk.FreeSpace / 1GB,
+                      1
+                  )
+
+                  $total = [math]::Round(
+                      $disk.Size / 1GB,
+                      1
+                  )
+
+                  $storageStatus += "$($disk.DeviceID)=$free/$total GB"
+              }
+
+              $storageText = $storageStatus -join " | "
+
+              # ----------------------------------------------------
+              # NETWORK TEST
+              # ----------------------------------------------------
+              $networkOK = $false
+
+              try {
+                  $networkTest = Test-NetConnection `
+                    -ComputerName "8.8.8.8" `
+                    -Port 443 `
+                    -WarningAction SilentlyContinue `
+                    -InformationLevel Quiet
+
+                  $networkOK = $networkTest
+              }
+              catch {
+                  $networkOK = $false
+              }
+
+              if ($networkOK) {
+                  $networkStatus = "ONLINE"
+              }
+              else {
+                  $networkStatus = "CHECK"
+              }
+
+              # ----------------------------------------------------
+              # LIVE LOG
+              # ----------------------------------------------------
+              Write-Host ""
+              Write-Host "------------------------------------------------------------"
 
               Write-Host `
-                "[UTC $utcStr | IST $istStr] " +
-                "Uptime: $uptimeStr | " +
-                "CPU: ${cpuLoad}% | " +
-                "RAM Used: ${ramUsagePercent}%"
+                "[$istStr IST | $utcStr UTC] " +
+                "UPTIME=$uptimeStr | " +
+                "CPU=$cpuLoad% | " +
+                "RAM=$ramUsagePercent% | " +
+                "DISK=$storageText | " +
+                "NETWORK=$networkStatus"
+
+              Write-Host "------------------------------------------------------------"
 
               Start-Sleep -Seconds 300
           }
 
-
       # ============================================================
-      # 8. CLEANUP
+      # 09 - CLEANUP
       # ============================================================
-      - name: Cleanup & Disconnect Tailscale
+      - name: "09 | Cleanup Tailscale"
         if: always()
         shell: powershell
         run: |
-
-          Write-Host "Workflow finished or cancelled."
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                    CLEANUP"
+          Write-Host "============================================================"
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
@@ -459,11 +575,15 @@ jobs:
 
               & $tailscale logout
 
-              Write-Host "Tailscale disconnected."
-
+              Write-Host "Tailscale : DISCONNECTED"
           }
           else {
 
-              Write-Host "Tailscale is not installed."
-
+              Write-Host "Tailscale executable not found."
+              Write-Host "Cleanup skipped."
           }
+
+          Write-Host ""
+          Write-Host "Cleanup complete."
+          Write-Host "============================================================"
+          Write-Host ""
