@@ -1,8 +1,19 @@
-- name: Test Telegram Bot
-  shell: powershell
-  run: |
+name: RDP
 
-    $message = "
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Test Telegram Bot
+        shell: powershell
+        run: |
+          $message = @"
 🚀 Telegram Bot Connected
 
 Repository:
@@ -13,12 +24,17 @@ ${{ github.run_id }}
 
 Status:
 Online
-"
+"@
 
-    Invoke-RestMethod `
-    -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
-    -Method Post `
-    -Body @{
-        chat_id="${{ secrets.TELEGRAM_CHAT_ID }}"
-        text=$message
-    }
+          Invoke-RestMethod `
+            -Uri "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" `
+            -Method Post `
+            -Body @{
+              chat_id = "${{ secrets.TELEGRAM_CHAT_ID }}"
+              text = $message
+            }
+
+      - name: Configure Core RDP Settings
+        shell: powershell
+        run: |
+          # Your existing RDP code here
