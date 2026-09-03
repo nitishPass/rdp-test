@@ -180,9 +180,68 @@ jobs:
 
 
       # ============================================================
-      # 07 | TELEGRAM NOTIFICATION (HTML)
+      # 07 | CUSTOMIZE ENVIRONMENT
       # ============================================================
-      - name: "07 | Telegram Notification"
+      - name: "07 | Customize Environment"
+        shell: powershell
+        run: |
+          Write-Host "============================================================"
+          Write-Host "CUSTOMIZING WINDOWS ENVIRONMENT"
+          Write-Host "============================================================"
+
+          # 1. Reclaim C: Drive Space by deleting heavy developer SDKs
+          Write-Host "`n[ INFO ] Reclaiming disk space... (This may take a minute)"
+          $pathsToDelete = @(
+            "C:\Android",
+            "C:\hostedtoolcache\windows",
+            "C:\Program Files\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Microsoft Visual Studio"
+          )
+
+          foreach ($path in $pathsToDelete) {
+            if (Test-Path $path) {
+              Write-Host "         Deleting: $path"
+              # Using cmd rmdir is significantly faster and more reliable than PowerShell's Remove-Item for deep nested files
+              cmd.exe /c "rmdir /s /q `"$path`""
+            }
+          }
+          Write-Host "[ OK ] Bloatware deleted successfully."
+
+          # 2. Disable Internet Explorer Enhanced Security Configuration (IE ESC)
+          Write-Host "`n[ INFO ] Disabling IE Enhanced Security Configuration..."
+          reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
+          reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
+          Write-Host "[ OK ] Browser security restrictions disabled."
+
+          # 3. Disable Server Manager Auto-Start Popup
+          Write-Host "`n[ INFO ] Disabling Server Manager auto-start..."
+          Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
+          reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
+          Write-Host "[ OK ] Server Manager disabled."
+
+          # 4. Check and install requested software via Chocolatey
+          Write-Host "`n[ INFO ] Checking software dependencies..."
+          
+          if (Get-Command "chrome" -ErrorAction SilentlyContinue -or (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
+            Write-Host "         [ OK ] Google Chrome is already installed. Skipping download."
+          } else {
+            Write-Host "         [ + ] Installing Google Chrome via Chocolatey..."
+            choco install googlechrome -y --no-progress | Out-Null
+          }
+
+          if (Get-Command "7z" -ErrorAction SilentlyContinue -or (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+            Write-Host "         [ OK ] 7-Zip is already installed. Skipping download."
+          } else {
+            Write-Host "         [ + ] Installing 7-Zip via Chocolatey..."
+            choco install 7zip -y --no-progress | Out-Null
+          }
+          Write-Host "[ OK ] Application environment ready."
+
+
+      # ============================================================
+      # 08 | TELEGRAM NOTIFICATION (HTML)
+      # ============================================================
+      - name: "08 | Telegram Notification"
         shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -201,6 +260,7 @@ jobs:
           $cpuCount = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
           
+          # Fetch storage after cleanup step so Telegram reports the newly freed space
           $storageLines = @()
           Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
             $free = [math]::Round($_.Free / 1GB, 2)
@@ -210,7 +270,6 @@ jobs:
 
           $githubLogUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
-          # Using clean ASCII and HTML formatting to avoid encoding errors
           $htmlMessage = @"
           <b>[ GITHUB RDP ONLINE ]</b>
 
@@ -243,9 +302,9 @@ jobs:
 
 
       # ============================================================
-      # 08 | RDP READY
+      # 09 | RDP READY
       # ============================================================
-      - name: "08 | RDP Ready"
+      - name: "09 | RDP Ready"
         shell: powershell
         run: |
           Write-Host ""
@@ -260,9 +319,9 @@ jobs:
 
 
       # ============================================================
-      # 09 | LIVE MONITOR & TELEGRAM BOT LISTENER
+      # 10 | LIVE MONITOR & TELEGRAM BOT LISTENER
       # ============================================================
-      - name: "09 | Live Monitor & Bot Listener"
+      - name: "10 | Live Monitor & Bot Listener"
         shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -291,7 +350,6 @@ jobs:
             Write-Host "------------------------------------------------------------"
             Write-Host "[IST : $($now.ToUniversalTime().AddHours(5.5).ToString('yyyy-MM-dd HH:mm:ss'))]"
             
-            # Removed emojis to prevent parsing corruption on Windows runners
             Write-Host "Uptime: $($uptime.ToString('dd\.hh\:mm\:ss')) | CPU: $cpuUsage % | RAM: $ramUsagePercent %"
             Write-Host "------------------------------------------------------------"
 
@@ -338,9 +396,9 @@ jobs:
 
 
       # ============================================================
-      # 10 | CLEANUP
+      # 11 | CLEANUP
       # ============================================================
-      - name: "10 | Cleanup Tailscale"
+      - name: "11 | Cleanup Tailscale"
         if: always()
         shell: powershell
         run: |
