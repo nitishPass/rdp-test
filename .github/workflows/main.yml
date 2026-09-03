@@ -303,8 +303,34 @@ jobs:
           Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           Write-Host "[ OK ] Server Manager disabled."
+
+          # 4. Install WizTree & Create Desktop Shortcut
+          Write-Host "`n[ INFO ] Installing WizTree via Chocolatey..."
+          choco install wiztree -y --no-progress | Out-Null
           
-          # 4. Create Self-Destruct Button on Desktop
+          $wizExePaths = @(
+            "C:\Program Files\WizTree\WizTree64.exe",
+            "C:\Program Files\WizTree\WizTree.exe",
+            "C:\Program Files (x86)\WizTree\WizTree.exe"
+          )
+          
+          $foundWiz = $false
+          foreach ($path in $wizExePaths) {
+            if (Test-Path $path) {
+              $WshShell = New-Object -ComObject WScript.Shell
+              $Shortcut = $WshShell.CreateShortcut("C:\Users\Public\Desktop\WizTree.lnk")
+              $Shortcut.TargetPath = $path
+              $Shortcut.Save()
+              Write-Host "[ OK ] WizTree installed and desktop shortcut created."
+              $foundWiz = $true
+              break
+            }
+          }
+          if (-not $foundWiz) {
+            Write-Host "[ WARNING ] WizTree installed, but shortcut creation failed (executable not found)."
+          }
+          
+          # 5. Create Self-Destruct Button on Desktop
           Write-Host "`n[ INFO ] Creating Self-Destruct button..."
           $publicDesktop = "C:\Users\Public\Desktop"
           $batPath = "$publicDesktop\SHUTDOWN_RUNNER.bat"
@@ -357,6 +383,7 @@ jobs:
           [+] Massive Developer Bloatware removed.
           [+] Browser security restrictions disabled.
           [+] Server Manager disabled.
+          [+] WizTree installed with Desktop shortcut.
           [+] Self-Destruct button added to Desktop.
 
           <b>SYSTEM SPECS</b>
