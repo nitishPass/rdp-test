@@ -14,7 +14,7 @@ jobs:
       # 01 | RUNNER INFORMATION
       # ============================================================
       - name: "01 | Runner Information"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "RUNNER INFORMATION"
@@ -36,12 +36,11 @@ jobs:
           }
           Write-Host "============================================================"
 
-
       # ============================================================
       # 02 | CONFIGURE RDP
       # ============================================================
       - name: "02 | Configure RDP"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "CONFIGURING REMOTE DESKTOP"
@@ -58,12 +57,11 @@ jobs:
           Write-Host "[ OK ] Firewall configured."
           Write-Host "[ OK ] Remote Desktop service restarted."
 
-
       # ============================================================
       # 03 | CONFIGURE RDP USER
       # ============================================================
       - name: "03 | Configure RDP User"
-        shell: powershell
+        shell: pwsh
         env:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -91,12 +89,11 @@ jobs:
 
           Write-Host "[ OK ] User added to Administrators and Remote Desktop Users."
 
-
       # ============================================================
       # 04 | INSTALL TAILSCALE
       # ============================================================
       - name: "04 | Install Tailscale"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "TAILSCALE"
@@ -109,25 +106,20 @@ jobs:
           } else {
             $installer = "$env:TEMP\tailscale-installer.msi"
             Write-Host "[ INFO ] Downloading Tailscale 1.82.0..."
-            
-            # Silent web request to prevent log bloat
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
-            
             Write-Host "[ OK ] Download completed."
             Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
             Remove-Item $installer -Force -ErrorAction SilentlyContinue
-
             if (-not (Test-Path $tailscale)) { Write-Error "Tailscale installation failed."; exit 1 }
             Write-Host "[ OK ] Tailscale installed."
           }
-
 
       # ============================================================
       # 05 | CONNECT TAILSCALE
       # ============================================================
       - name: "05 | Connect Tailscale"
-        shell: powershell
+        shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
@@ -145,7 +137,6 @@ jobs:
           $tailscaleExitCode = $LASTEXITCODE
           if ($tailscaleExitCode -ne 0) { Write-Error "Tailscale failed to connect. Exit code: $tailscaleExitCode"; exit $tailscaleExitCode }
 
-          # Dynamic IP Retry Loop
           $tailscaleIP = $null
           $retries = 0
           Write-Host "[ INFO ] Waiting for Tailscale IPv4 address..."
@@ -154,20 +145,17 @@ jobs:
             $tailscaleIP = & $tailscale ip -4 | Select-Object -First 1
             $retries++
           }
-
           if ([string]::IsNullOrWhiteSpace($tailscaleIP)) { Write-Error "Could not obtain Tailscale IPv4 address."; exit 1 }
 
           $tailscaleIP = $tailscaleIP.Trim()
           "TAILSCALE_IP=$tailscaleIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
           Write-Host "TAILSCALE Status: CONNECTED | IPv4: $tailscaleIP"
-
 
       # ============================================================
       # 06 | VERIFY RDP
       # ============================================================
       - name: "06 | Verify RDP"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "VERIFYING RDP"
@@ -178,12 +166,11 @@ jobs:
           if (-not $result.TcpTestSucceeded) { Write-Error "RDP port 3389 is not reachable."; exit 1 }
           Write-Host "[ OK ] RDP port 3389 is OPEN."
 
-
       # ============================================================
       # 07 | TELEGRAM NOTIFICATION (INITIAL)
       # ============================================================
       - name: "07 | Telegram Notification (Initial)"
-        shell: powershell
+        shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -199,15 +186,15 @@ jobs:
           }
 
           $htmlMessage = @"
-          <b>[ GITHUB RDP ONLINE ]</b>
+          🖥️ <b>[ GITHUB RDP ONLINE ]</b>
 
-          <b>CONNECTION DETAILS</b>
-          - <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
-          - <b>Port:</b> <code>3389</code>
-          - <b>Username:</b> <code>$env:RDP_USERNAME</code>
+          <b>🔌 CONNECTION DETAILS</b>
+          • <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
+          • <b>Port:</b> <code>3389</code>
+          • <b>Username:</b> <code>$env:RDP_USERNAME</code>
 
-          <b>STATUS</b>
-          [⏳] <i>Server is online! You can connect right now. A massive background cleanup to free up disk space is currently running...</i>
+          <b>🔄 STATUS</b>
+          ⏳ <i>Server is online! You can connect right now. A massive background cleanup to free up disk space is currently running...</i>
           "@
 
           $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
@@ -216,74 +203,36 @@ jobs:
             parse_mode = "HTML"
             disable_web_page_preview = $true
           }
-
           if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
           Write-Host "[ OK ] Initial HTML Telegram notification sent successfully."
-
 
       # ============================================================
       # 08 | CUSTOMIZE ENVIRONMENT
       # ============================================================
       - name: "08 | Customize Environment"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "CUSTOMIZING WINDOWS ENVIRONMENT"
           Write-Host "============================================================"
 
-          # 1. Reclaim C: Drive Space by deleting heavy developer SDKs and Frameworks
+          # 1. Reclaim C: Drive Space
           Write-Host "`n[ INFO ] Reclaiming disk space... (This will take 5-10 minutes to wipe millions of tiny files)"
-          
           $pathsToDelete = @(
-            # Root C:\ Bloat
-            "C:\Android",
-            "C:\hostedtoolcache\windows",
-            "C:\ghcup",
-            "C:\rtools45",
-            "C:\Julia",
-            "C:\Strawberry",
-            "C:\mingw64",
-            "C:\mingw32",
-            "C:\Miniconda",
-            "C:\msys64",
-            "C:\actionarchivecache",
-            "C:\npm",
-            "C:\vcpkg",
-            "C:\SeleniumWebDrivers",
-            "C:\selenium",
-            "C:\PostgreSQL",
-            "C:\cobertura-2.1.1",
-            "C:\tools\php",
-            "C:\tools\kotlinc",
-            
-            # Program Files Bloat
-            "C:\Program Files\Microsoft Visual Studio",
-            "C:\Program Files\dotnet",
-            "C:\Program Files\Azure Cosmos DB Emulator",
-            "C:\Program Files\LLVM",
-            "C:\Program Files\MongoDB",
-            "C:\Program Files\mongosh",
-            "C:\Program Files\PostgreSQL",
-            "C:\Program Files\MySQL",
-            "C:\Program Files\Microsoft SQL Server",
-            "C:\Program Files\Microsoft Service Fabric",
-            "C:\Program Files\OpenSSL",
-            "C:\Program Files\nodejs",
-            "C:\Program Files\CMake",
-            
-            # Program Files (x86) Bloat
-            "C:\Program Files (x86)\Microsoft Visual Studio",
-            "C:\Program Files (x86)\Android",
-            "C:\Program Files (x86)\Microsoft SDKs",
-            "C:\Program Files (x86)\Windows Kits",
-            "C:\Program Files (x86)\dotnet",
-            "C:\Program Files (x86)\Microsoft Analysis Services",
-            "C:\Program Files (x86)\WiX Toolset v3.14",
-            
-            # ProgramData Bloat
-            "C:\ProgramData\Package Cache"
+            "C:\Android", "C:\hostedtoolcache\windows", "C:\ghcup", "C:\rtools45", "C:\Julia", 
+            "C:\Strawberry", "C:\mingw64", "C:\mingw32", "C:\Miniconda", "C:\msys64", 
+            "C:\actionarchivecache", "C:\npm", "C:\vcpkg", "C:\SeleniumWebDrivers", "C:\selenium",
+            "C:\PostgreSQL", "C:\cobertura-2.1.1", "C:\tools\php", "C:\tools\kotlinc",
+            "C:\Program Files\Microsoft Visual Studio", "C:\Program Files\dotnet", 
+            "C:\Program Files\Azure Cosmos DB Emulator", "C:\Program Files\LLVM", "C:\Program Files\MongoDB", 
+            "C:\Program Files\mongosh", "C:\Program Files\PostgreSQL", "C:\Program Files\MySQL", 
+            "C:\Program Files\Microsoft SQL Server", "C:\Program Files\Microsoft Service Fabric", 
+            "C:\Program Files\OpenSSL", "C:\Program Files\nodejs", "C:\Program Files\CMake",
+            "C:\Program Files (x86)\Microsoft Visual Studio", "C:\Program Files (x86)\Android", 
+            "C:\Program Files (x86)\Microsoft SDKs", "C:\Program Files (x86)\Windows Kits", 
+            "C:\Program Files (x86)\dotnet", "C:\Program Files (x86)\Microsoft Analysis Services", 
+            "C:\Program Files (x86)\WiX Toolset v3.14", "C:\ProgramData\Package Cache"
           )
-
           foreach ($path in $pathsToDelete) {
             if (Test-Path $path) {
               Write-Host "         Deleting: $path"
@@ -292,7 +241,7 @@ jobs:
           }
           Write-Host "[ OK ] Bloatware deleted successfully."
 
-          # 2. Disable Internet Explorer Enhanced Security Configuration (IE ESC)
+          # 2. Disable IE Enhanced Security
           Write-Host "`n[ INFO ] Disabling IE Enhanced Security Configuration..."
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
@@ -304,35 +253,27 @@ jobs:
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           Write-Host "[ OK ] Server Manager disabled."
 
-          # 4. Install WizTree & Create Desktop Shortcut
-          Write-Host "`n[ INFO ] Installing WizTree via Chocolatey..."
-          choco install wiztree -y --no-progress | Out-Null
+          # 4. Install Rclone and WizTree
+          Write-Host "`n[ INFO ] Installing useful tools via Chocolatey (Rclone & WizTree)..."
+          choco install rclone wiztree -y --no-progress | Out-Null
           
-          $wizExePaths = @(
-            "C:\Program Files\WizTree\WizTree64.exe",
-            "C:\Program Files\WizTree\WizTree.exe",
-            "C:\Program Files (x86)\WizTree\WizTree.exe"
-          )
+          # 5. Create Desktop Shortcuts
+          Write-Host "`n[ INFO ] Creating Desktop Shortcuts..."
+          $publicDesktop = "C:\Users\Public\Desktop"
           
-          $foundWiz = $false
+          # WizTree Shortcut
+          $wizExePaths = @("C:\Program Files\WizTree\WizTree64.exe", "C:\Program Files\WizTree\WizTree.exe", "C:\Program Files (x86)\WizTree\WizTree.exe")
           foreach ($path in $wizExePaths) {
             if (Test-Path $path) {
               $WshShell = New-Object -ComObject WScript.Shell
-              $Shortcut = $WshShell.CreateShortcut("C:\Users\Public\Desktop\WizTree.lnk")
+              $Shortcut = $WshShell.CreateShortcut("$publicDesktop\WizTree.lnk")
               $Shortcut.TargetPath = $path
               $Shortcut.Save()
-              Write-Host "[ OK ] WizTree installed and desktop shortcut created."
-              $foundWiz = $true
               break
             }
           }
-          if (-not $foundWiz) {
-            Write-Host "[ WARNING ] WizTree installed, but shortcut creation failed (executable not found)."
-          }
-          
-          # 5. Create Self-Destruct Button on Desktop
-          Write-Host "`n[ INFO ] Creating Self-Destruct button..."
-          $publicDesktop = "C:\Users\Public\Desktop"
+
+          # Self-Destruct Shortcut
           $batPath = "$publicDesktop\SHUTDOWN_RUNNER.bat"
           $batContent = @"
           @echo off
@@ -348,14 +289,13 @@ jobs:
           timeout /t 5 >nul
           "@
           Set-Content -Path $batPath -Value $batContent
-          Write-Host "[ OK ] Self-Destruct button created."
-
+          Write-Host "[ OK ] Shortcuts created successfully."
 
       # ============================================================
       # 09 | TELEGRAM NOTIFICATION (CLEANUP COMPLETE)
       # ============================================================
       - name: "09 | Telegram Notification (Cleanup Complete)"
-        shell: powershell
+        shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -367,7 +307,6 @@ jobs:
           $cpuCount = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
           
-          # Fetch NEW storage after cleanup
           $storageLines = @()
           Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
             $free = [math]::Round($_.Free / 1GB, 2)
@@ -378,41 +317,38 @@ jobs:
           $githubLogUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
           $htmlMessage = @"
-          <b>[ ENVIRONMENT OPTIMIZED ]</b>
+          ✨ <b>[ ENVIRONMENT OPTIMIZED ]</b>
 
-          [+] Massive Developer Bloatware removed.
-          [+] Browser security restrictions disabled.
-          [+] Server Manager disabled.
-          [+] WizTree installed with Desktop shortcut.
-          [+] Self-Destruct button added to Desktop.
+          ✅ Massive Developer Bloatware removed.
+          ✅ Server Manager disabled.
+          ✅ WizTree & Rclone installed.
+          ✅ Self-Destruct button added to Desktop.
 
-          <b>SYSTEM SPECS</b>
-          - <b>CPU:</b> $cpuCount logical cores
-          - <b>RAM:</b> $ramGB GB
-          - <b>Storage (Optimized):</b> 
+          <b>⚙️ SYSTEM SPECS</b>
+          • <b>CPU:</b> $cpuCount logical cores
+          • <b>RAM:</b> $ramGB GB
+          • <b>Storage (Optimized):</b> 
           $storage
 
-          <b>SESSION INFO</b>
-          - <b>Max Runtime:</b> 6 Hours
-          - <b>Controls:</b> Send /status or /stop
-          - <a href="$githubLogUrl">View GitHub Action Logs</a>
+          <b>⏱️ SESSION INFO</b>
+          • <b>Max Runtime:</b> 6 Hours
+          • <b>Controls:</b> Send /status or /stop
+          • <a href="$githubLogUrl">View GitHub Action Logs</a>
           "@
 
-          $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
             chat_id = $env:TELEGRAM_CHAT_ID
             text = $htmlMessage
             parse_mode = "HTML"
             disable_web_page_preview = $true
-          }
-
-          Write-Host "[ OK ] Cleanup Complete notification sent successfully."
-
+          } | Out-Null
+          Write-Host "[ OK ] Cleanup Complete notification sent."
 
       # ============================================================
       # 10 | RDP READY
       # ============================================================
       - name: "10 | RDP Ready"
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host ""
           Write-Host "============================================================"
@@ -424,12 +360,11 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
-
       # ============================================================
       # 11 | LIVE MONITOR & TELEGRAM BOT LISTENER
       # ============================================================
       - name: "11 | Live Monitor & Bot Listener"
-        shell: powershell
+        shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -438,7 +373,6 @@ jobs:
           Write-Host "LIVE RDP MONITOR & COMMAND LISTENER"
           Write-Host "============================================================"
           
-          # --- FIX: FLUSH OLD TELEGRAM MESSAGES ---
           Write-Host "[ INFO ] Flushing old Telegram messages from previous runs..."
           $tgBaseUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN"
           $flushUpdates = Invoke-RestMethod -Uri "$tgBaseUrl/getUpdates" -Method Get -ErrorAction SilentlyContinue
@@ -447,7 +381,6 @@ jobs:
           if ($null -ne $flushUpdates -and $flushUpdates.ok -and $flushUpdates.result.Count -gt 0) {
             $lastUpdate = $flushUpdates.result[-1].update_id
             $updateId = $lastUpdate + 1
-            # Acknowledge to Telegram so they are permanently cleared
             Invoke-RestMethod -Uri "$tgBaseUrl/getUpdates?offset=$updateId" -Method Get -ErrorAction SilentlyContinue | Out-Null
           }
           Write-Host "[ OK ] Telegram queue cleared."
@@ -455,40 +388,34 @@ jobs:
           Write-Host "Listening for /status or /stop commands on Telegram..."
           Write-Host ""
 
-          $startTime = Get-Date
           $stopRequested = $false
 
           while (-not $stopRequested) {
             
             $now = Get-Date
-            $uptime = $now - $startTime
+            $os = Get-CimInstance Win32_OperatingSystem
+            $uptime = $now - $os.LastBootUpTime
 
             $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average
             $cpuUsage = [math]::Round($cpu.Average, 1)
-            $memory = Get-CimInstance Win32_OperatingSystem
-            $ramUsagePercent = [math]::Round((($memory.TotalVisibleMemorySize - $memory.FreePhysicalMemory) / $memory.TotalVisibleMemorySize) * 100, 1)
+            $ramUsagePercent = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
 
             Write-Host "------------------------------------------------------------"
             Write-Host "[IST : $($now.ToUniversalTime().AddHours(5.5).ToString('yyyy-MM-dd HH:mm:ss'))]"
-            
             Write-Host "Uptime: $($uptime.ToString('dd\.hh\:mm\:ss')) | CPU: $cpuUsage % | RAM: $ramUsagePercent %"
             Write-Host "------------------------------------------------------------"
 
-            # Network Keep-Alive (Silent HTTPS request)
             Invoke-WebRequest -Uri "https://8.8.8.8" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 
-            # Polling Loop: Runs 60 times (5 mins total) between logs
             for ($i = 0; $i -lt 60; $i++) {
               
-              # 1. Desktop Self-Destruct Listener
               if (Test-Path "C:\stop_runner.txt") {
                 Write-Host "[ ! ] Self-Destruct triggered from Desktop! Terminating session..."
-                Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 Self-Destruct activated from the Remote Desktop. Shutting down immediately..." } -ErrorAction SilentlyContinue
+                Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 <b>Self-Destruct activated from the Remote Desktop.</b> Shutting down immediately..." ; parse_mode = "HTML" } -ErrorAction SilentlyContinue
                 $stopRequested = $true
                 break
               }
 
-              # 2. Poll Telegram for new messages silently
               $tgUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$updateId&timeout=0"
               $updates = Invoke-RestMethod -Uri $tgUrl -Method Get -ErrorAction SilentlyContinue
 
@@ -498,18 +425,16 @@ jobs:
                   $chatId = [string]$msg.message.chat.id
                   $text = $msg.message.text
 
-                  # Security Verification: Only respond to YOUR chat ID
                   if ($chatId -eq $env:TELEGRAM_CHAT_ID) {
-                    
                     if ($text -match "^/stop") {
                       Write-Host "[ ! ] Received /stop command from Telegram. Terminating session..."
-                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "Shutting down the RDP server immediately..." } -ErrorAction SilentlyContinue
+                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 <b>Shutting down the RDP server immediately...</b>" ; parse_mode = "HTML" } -ErrorAction SilentlyContinue
                       $stopRequested = $true
                       break
                     }
                     elseif ($text -match "^/status") {
                       Write-Host "[ INFO ] Received /status command. Sending reply..."
-                      $statusMsg = "<b>[ LIVE STATUS ]</b>`n`n<b>Uptime:</b> $($uptime.ToString('hh\:mm\:ss'))`n<b>CPU Usage:</b> $cpuUsage %`n<b>RAM Usage:</b> $ramUsagePercent %"
+                      $statusMsg = "📊 <b>[ LIVE STATUS ]</b>`n`n⏱️ <b>Uptime:</b> $($uptime.ToString('hh\:mm\:ss'))`n⚙️ <b>CPU Usage:</b> $cpuUsage %`n🧠 <b>RAM Usage:</b> $ramUsagePercent %"
                       Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $statusMsg; parse_mode = "HTML" } -ErrorAction SilentlyContinue
                     }
                   }
@@ -517,26 +442,22 @@ jobs:
               }
 
               if ($stopRequested) { break }
-              
-              # Responsive Sleep
               Start-Sleep -Seconds 5
             }
           }
-
 
       # ============================================================
       # 12 | CLEANUP
       # ============================================================
       - name: "12 | Cleanup Tailscale"
         if: always()
-        shell: powershell
+        shell: pwsh
         run: |
           Write-Host "============================================================"
           Write-Host "CLEANUP"
           Write-Host "============================================================"
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-
           if (Test-Path $tailscale) {
             Write-Host "[ INFO ] Disconnecting Tailscale..."
             & $tailscale logout
@@ -544,5 +465,4 @@ jobs:
           } else {
             Write-Host "[ INFO ] Tailscale executable not found."
           }
-
           Write-Host "Cleanup completed."
