@@ -312,11 +312,25 @@ jobs:
           Write-Host "============================================================"
           Write-Host "LIVE RDP MONITOR & COMMAND LISTENER"
           Write-Host "============================================================"
+          
+          # --- FIX: FLUSH OLD TELEGRAM MESSAGES ---
+          Write-Host "[ INFO ] Flushing old Telegram messages from previous runs..."
+          $tgBaseUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN"
+          $flushUpdates = Invoke-RestMethod -Uri "$tgBaseUrl/getUpdates" -Method Get -ErrorAction SilentlyContinue
+          
+          $updateId = 0
+          if ($null -ne $flushUpdates -and $flushUpdates.ok -and $flushUpdates.result.Count -gt 0) {
+            $lastUpdate = $flushUpdates.result[-1].update_id
+            $updateId = $lastUpdate + 1
+            # Acknowledge to Telegram so they are permanently cleared
+            Invoke-RestMethod -Uri "$tgBaseUrl/getUpdates?offset=$updateId" -Method Get -ErrorAction SilentlyContinue | Out-Null
+          }
+          Write-Host "[ OK ] Telegram queue cleared."
+          Write-Host ""
           Write-Host "Listening for /status or /stop commands on Telegram..."
           Write-Host ""
 
           $startTime = Get-Date
-          $updateId = 0
           $stopRequested = $false
 
           while (-not $stopRequested) {
