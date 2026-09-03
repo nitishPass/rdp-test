@@ -190,7 +190,7 @@ jobs:
           Write-Host "============================================================"
 
           # 1. Reclaim C: Drive Space by deleting heavy developer SDKs
-          Write-Host "`n[ INFO ] Reclaiming disk space... (This may take a minute)"
+          Write-Host "`n[ INFO ] Reclaiming disk space... (This may take several minutes)"
           $pathsToDelete = @(
             "C:\Android",
             "C:\hostedtoolcache\windows",
@@ -218,24 +218,6 @@ jobs:
           Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           Write-Host "[ OK ] Server Manager disabled."
-
-          # 4. Check and install requested software via Chocolatey
-          Write-Host "`n[ INFO ] Checking software dependencies..."
-          
-          if (Get-Command "chrome" -ErrorAction SilentlyContinue -or (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
-            Write-Host "         [ OK ] Google Chrome is already installed. Skipping download."
-          } else {
-            Write-Host "         [ + ] Installing Google Chrome via Chocolatey..."
-            choco install googlechrome -y --no-progress | Out-Null
-          }
-
-          if (Get-Command "7z" -ErrorAction SilentlyContinue -or (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
-            Write-Host "         [ OK ] 7-Zip is already installed. Skipping download."
-          } else {
-            Write-Host "         [ + ] Installing 7-Zip via Chocolatey..."
-            choco install 7zip -y --no-progress | Out-Null
-          }
-          Write-Host "[ OK ] Application environment ready."
 
 
       # ============================================================
