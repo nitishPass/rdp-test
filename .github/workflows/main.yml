@@ -223,27 +223,52 @@ jobs:
           Write-Host "CUSTOMIZING WINDOWS ENVIRONMENT"
           Write-Host "============================================================"
 
-          # 1. Disable IE Enhanced Security (Best to do early)
+          # 1. Disable IE Enhanced Security
           Write-Host "`n[ INFO ] Disabling IE Enhanced Security Configuration..."
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
           Write-Host "[ OK ] Browser security restrictions disabled."
 
-          # 2. Disable Server Manager Auto-Start Popup
+          # 2. Disable Server Manager Auto-Start
           Write-Host "`n[ INFO ] Disabling Server Manager auto-start..."
           Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           Write-Host "[ OK ] Server Manager disabled."
 
-          # 3. Install Tools FIRST: Rclone, WizTree, and Free Download Manager
+          # 3. Install Tools FIRST (Silencer removed for full visibility)
           Write-Host "`n[ INFO ] Installing useful tools via Chocolatey (Rclone, WizTree, FDM)..."
-          choco install rclone wiztree freedownloadmanager -y --no-progress | Out-Null
+          choco install rclone wiztree freedownloadmanager -y --no-progress
+          Write-Host "[ OK ] Chocolatey installations complete."
           
           # 4. Create Sync Directory
           Write-Host "`n[ INFO ] Creating D:\GoogleDriveSync directory..."
           New-Item -ItemType Directory -Force -Path "D:\GoogleDriveSync" | Out-Null
           
-          # 5. Create Desktop Shortcuts
+          # 5. Aesthetics: Wallpaper & Profile Picture
+          Write-Host "`n[ INFO ] Applying Custom Profile Picture..."
+          $picUrl = "https://i.ibb.co/7dSJSb8v/photo-6212922132610617114-c.jpg"
+          $picDir = "C:\ProgramData\Microsoft\User Account Pictures"
+          Invoke-WebRequest -Uri $picUrl -OutFile "$picDir\user-192.png"
+          Copy-Item "$picDir\user-192.png" "$picDir\user.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\user.bmp" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\user-48.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\user-44.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\user-40.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\user-32.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\guest.png" -Force
+          Copy-Item "$picDir\user-192.png" "$picDir\guest.bmp" -Force
+          Write-Host "[ OK ] Profile picture updated."
+
+          Write-Host "`n[ INFO ] Downloading and Setting Hacker Wallpaper..."
+          $wpUrl = "https://i.ibb.co/vCD644wT/Chat-GPT-Image-Sep-3-2026-04-19-19-PM.png"
+          $wpPath = "C:\Users\Public\Wallpaper.png"
+          Invoke-WebRequest -Uri $wpUrl -OutFile $wpPath
+          # System Policy edit to force wallpaper across all users instantly
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v Wallpaper /t REG_SZ /d $wpPath /f | Out-Null
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v WallpaperStyle /t REG_SZ /d 2 /f | Out-Null
+          Write-Host "[ OK ] Wallpaper forced via System Policy."
+
+          # 6. Create Desktop Shortcuts
           Write-Host "`n[ INFO ] Creating Desktop Shortcuts..."
           $publicDesktop = "C:\Users\Public\Desktop"
           
@@ -253,6 +278,18 @@ jobs:
             if (Test-Path $path) {
               $WshShell = New-Object -ComObject WScript.Shell
               $Shortcut = $WshShell.CreateShortcut("$publicDesktop\WizTree.lnk")
+              $Shortcut.TargetPath = $path
+              $Shortcut.Save()
+              break
+            }
+          }
+
+          # FDM Shortcut
+          $fdmExePaths = @("C:\Program Files\Free Download Manager\fdm.exe", "C:\Program Files (x86)\Free Download Manager\fdm.exe", "$env:LOCALAPPDATA\Programs\Free Download Manager\fdm.exe")
+          foreach ($path in $fdmExePaths) {
+            if (Test-Path $path) {
+              $WshShell = New-Object -ComObject WScript.Shell
+              $Shortcut = $WshShell.CreateShortcut("$publicDesktop\Free Download Manager.lnk")
               $Shortcut.TargetPath = $path
               $Shortcut.Save()
               break
@@ -307,7 +344,7 @@ jobs:
           Set-Content -Path $backupBatPath -Value $backupBatContent
           Write-Host "[ OK ] Shortcuts created successfully."
 
-          # 6. Reclaim C: Drive Space (DO THIS LAST to ensure Chocolatey has all dependencies)
+          # 7. Reclaim C: Drive Space (DO THIS LAST)
           Write-Host "`n[ INFO ] Reclaiming disk space... (This will take 5-10 minutes to wipe millions of tiny files)"
           $pathsToDelete = @(
             "C:\Android", "C:\hostedtoolcache\windows", "C:\ghcup", "C:\rtools45", "C:\Julia", 
@@ -362,7 +399,7 @@ jobs:
           ✨ <b>[ ENVIRONMENT OPTIMIZED ]</b>
 
           ✅ Massive Developer Bloatware removed.
-          ✅ Server Manager disabled.
+          ✅ Hacker Wallpaper & Custom Avatar loaded.
           ✅ WizTree, Rclone & Free Download Manager installed.
           ✅ Backup & Destroy scripts added to Desktop.
 
