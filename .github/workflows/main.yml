@@ -251,6 +251,10 @@ jobs:
             "C:\vcpkg",
             "C:\SeleniumWebDrivers",
             "C:\selenium",
+            "C:\PostgreSQL",
+            "C:\cobertura-2.1.1",
+            "C:\tools\php",
+            "C:\tools\kotlinc",
             
             # Program Files Bloat
             "C:\Program Files\Microsoft Visual Studio",
@@ -258,17 +262,26 @@ jobs:
             "C:\Program Files\Azure Cosmos DB Emulator",
             "C:\Program Files\LLVM",
             "C:\Program Files\MongoDB",
+            "C:\Program Files\mongosh",
             "C:\Program Files\PostgreSQL",
             "C:\Program Files\MySQL",
             "C:\Program Files\Microsoft SQL Server",
             "C:\Program Files\Microsoft Service Fabric",
+            "C:\Program Files\OpenSSL",
+            "C:\Program Files\nodejs",
+            "C:\Program Files\CMake",
             
             # Program Files (x86) Bloat
             "C:\Program Files (x86)\Microsoft Visual Studio",
             "C:\Program Files (x86)\Android",
             "C:\Program Files (x86)\Microsoft SDKs",
             "C:\Program Files (x86)\Windows Kits",
-            "C:\Program Files (x86)\dotnet"
+            "C:\Program Files (x86)\dotnet",
+            "C:\Program Files (x86)\Microsoft Analysis Services",
+            "C:\Program Files (x86)\WiX Toolset v3.14",
+            
+            # ProgramData Bloat
+            "C:\ProgramData\Package Cache"
           )
 
           foreach ($path in $pathsToDelete) {
