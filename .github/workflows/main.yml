@@ -25,32 +25,16 @@ jobs:
           Write-Host "CPU           : $((Get-CimInstance Win32_Processor | Select-Object -First 1).Name)"
           Write-Host "Logical CPUs  : $((Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)"
 
-          $ramGB = [math]::Round(
-            (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB,
-            2
-          )
-
+          $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
           Write-Host "RAM           : $ramGB GB"
           Write-Host ""
 
-          Get-PSDrive -PSProvider FileSystem |
-            Where-Object { $_.Root -match '^[A-Z]:\\$' } |
-            ForEach-Object {
-              $total = [math]::Round(
-                ($_.Used + $_.Free) / 1GB,
-                2
-              )
-
-              $free = [math]::Round(
-                $_.Free / 1GB,
-                2
-              )
-
-              Write-Host "$($_.Name): Total $total GB | Free $free GB"
-            }
-
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
+            $total = [math]::Round(($_.Used + $_.Free) / 1GB, 2)
+            $free = [math]::Round($_.Free / 1GB, 2)
+            Write-Host "$($_.Name): Total $total GB | Free $free GB"
+          }
           Write-Host "============================================================"
-
 
       # ============================================================
       # 02 | CONFIGURE RDP
@@ -62,35 +46,16 @@ jobs:
           Write-Host "CONFIGURING REMOTE DESKTOP"
           Write-Host "============================================================"
 
-          # Enable RDP
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' `
-            -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0
 
-          # Disable Network Level Authentication
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' `
-            -Value 0
-
-          # RDP security layer
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' `
-            -Value 0
-
-          # Enable RDP firewall rules
-          Get-NetFirewallRule -DisplayGroup "Remote Desktop" |
-            Enable-NetFirewallRule
-
-          # Restart Remote Desktop service
+          Get-NetFirewallRule -DisplayGroup "Remote Desktop" | Enable-NetFirewallRule
           Restart-Service -Name TermService -Force
 
           Write-Host "[ OK ] RDP enabled."
           Write-Host "[ OK ] Firewall configured."
           Write-Host "[ OK ] Remote Desktop service restarted."
-
 
       # ============================================================
       # 03 | CONFIGURE RDP USER
@@ -105,60 +70,24 @@ jobs:
           Write-Host "CONFIGURING RDP USER"
           Write-Host "============================================================"
 
-          if ([string]::IsNullOrWhiteSpace($env:RDP_USERNAME)) {
-            Write-Error "RDP_USERNAME secret is missing."
-            exit 1
-          }
+          if ([string]::IsNullOrWhiteSpace($env:RDP_USERNAME)) { Write-Error "RDP_USERNAME missing."; exit 1 }
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { Write-Error "RDP_PASSWORD missing."; exit 1 }
 
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            Write-Error "RDP_PASSWORD secret is missing."
-            exit 1
-          }
-
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD `
-            -AsPlainText `
-            -Force
-
-          $existingUser = Get-LocalUser `
-            -Name $env:RDP_USERNAME `
-            -ErrorAction SilentlyContinue
+          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $existingUser = Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue
 
           if ($existingUser) {
             Write-Host "[ INFO ] User already exists. Updating password."
-
-            Set-LocalUser `
-              -Name $env:RDP_USERNAME `
-              -Password $securePassword
-          }
-          else {
-            New-LocalUser `
-              -Name $env:RDP_USERNAME `
-              -Password $securePassword `
-              -AccountNeverExpires `
-              -PasswordNeverExpires `
-              -UserMayNotChangePassword `
-              -Description "GitHub Actions RDP User" |
-              Out-Null
-
+            Set-LocalUser -Name $env:RDP_USERNAME -Password $securePassword
+          } else {
+            New-LocalUser -Name $env:RDP_USERNAME -Password $securePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description "GitHub Actions RDP User" | Out-Null
             Write-Host "[ OK ] RDP user created."
           }
 
-          # Add to Administrators
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member $env:RDP_USERNAME `
-            -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME -ErrorAction SilentlyContinue
 
-          # Add to Remote Desktop Users
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member $env:RDP_USERNAME `
-            -ErrorAction SilentlyContinue
-
-          Write-Host "[ OK ] User added to Administrators."
-          Write-Host "[ OK ] User added to Remote Desktop Users."
-
+          Write-Host "[ OK ] User added to Administrators and Remote Desktop Users."
 
       # ============================================================
       # 04 | INSTALL TAILSCALE
@@ -174,37 +103,21 @@ jobs:
 
           if (Test-Path $tailscale) {
             Write-Host "[ OK ] Tailscale already installed."
-          }
-          else {
+          } else {
             $installer = "$env:TEMP\tailscale-installer.msi"
-
             Write-Host "[ INFO ] Downloading Tailscale 1.82.0..."
-
-            Invoke-WebRequest `
-              -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" `
-              -OutFile $installer
-
+            
+            # Silent web request to prevent log bloat
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
+            
             Write-Host "[ OK ] Download completed."
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
+            Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-            Start-Process `
-              -FilePath "msiexec.exe" `
-              -ArgumentList "/i `"$installer`" /qn /norestart" `
-              -Wait `
-              -NoNewWindow
-
-            Remove-Item `
-              $installer `
-              -Force `
-              -ErrorAction SilentlyContinue
-
-            if (-not (Test-Path $tailscale)) {
-              Write-Error "Tailscale installation failed."
-              exit 1
-            }
-
+            if (-not (Test-Path $tailscale)) { Write-Error "Tailscale installation failed."; exit 1 }
             Write-Host "[ OK ] Tailscale installed."
           }
-
 
       # ============================================================
       # 05 | CONNECT TAILSCALE
@@ -218,55 +131,32 @@ jobs:
           Write-Host "CONNECTING TO TAILSCALE"
           Write-Host "============================================================"
 
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            Write-Error "TAILSCALE_AUTH_KEY secret is missing."
-            exit 1
-          }
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { Write-Error "TAILSCALE_AUTH_KEY missing."; exit 1 }
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-
           $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-
           Write-Host "Hostname : $hostname"
 
-          & $tailscale up `
-            --authkey="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="$hostname"
-
-          # IMPORTANT:
-          # Capture the native command exit code immediately.
+          & $tailscale up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="$hostname"
           $tailscaleExitCode = $LASTEXITCODE
+          if ($tailscaleExitCode -ne 0) { Write-Error "Tailscale failed to connect. Exit code: $tailscaleExitCode"; exit $tailscaleExitCode }
 
-          if ($tailscaleExitCode -ne 0) {
-            Write-Error "Tailscale failed to connect. Exit code: $tailscaleExitCode"
-            exit $tailscaleExitCode
+          # Dynamic IP Retry Loop
+          $tailscaleIP = $null
+          $retries = 0
+          Write-Host "[ INFO ] Waiting for Tailscale IPv4 address..."
+          while ([string]::IsNullOrWhiteSpace($tailscaleIP) -and $retries -lt 10) {
+            Start-Sleep -Seconds 3
+            $tailscaleIP = & $tailscale ip -4 | Select-Object -First 1
+            $retries++
           }
 
-          Start-Sleep -Seconds 5
-
-          $tailscaleIP = & $tailscale ip -4 |
-            Select-Object -First 1
-
-          if ([string]::IsNullOrWhiteSpace($tailscaleIP)) {
-            Write-Error "Could not obtain Tailscale IPv4 address."
-            exit 1
-          }
+          if ([string]::IsNullOrWhiteSpace($tailscaleIP)) { Write-Error "Could not obtain Tailscale IPv4 address."; exit 1 }
 
           $tailscaleIP = $tailscaleIP.Trim()
+          "TAILSCALE_IP=$tailscaleIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          "TAILSCALE_IP=$tailscaleIP" |
-            Out-File `
-              -FilePath $env:GITHUB_ENV `
-              -Append `
-              -Encoding utf8
-
-          Write-Host ""
-          Write-Host "TAILSCALE"
-          Write-Host "  Status   : CONNECTED"
-          Write-Host "  IPv4     : $tailscaleIP"
-          Write-Host "  Hostname : $hostname"
-          Write-Host "Status : SUCCESS"
-
+          Write-Host "TAILSCALE Status: CONNECTED | IPv4: $tailscaleIP"
 
       # ============================================================
       # 06 | VERIFY RDP
@@ -277,27 +167,14 @@ jobs:
           Write-Host "============================================================"
           Write-Host "VERIFYING RDP"
           Write-Host "============================================================"
-
           Start-Sleep -Seconds 5
-
-          $result = Test-NetConnection `
-            -ComputerName "127.0.0.1" `
-            -Port 3389 `
-            -WarningAction SilentlyContinue
-
-          Write-Host "RDP Port : 3389"
+          $result = Test-NetConnection -ComputerName "127.0.0.1" -Port 3389 -WarningAction SilentlyContinue
           Write-Host "Listening: $($result.TcpTestSucceeded)"
-
-          if (-not $result.TcpTestSucceeded) {
-            Write-Error "RDP port 3389 is not reachable."
-            exit 1
-          }
-
+          if (-not $result.TcpTestSucceeded) { Write-Error "RDP port 3389 is not reachable."; exit 1 }
           Write-Host "[ OK ] RDP port 3389 is OPEN."
 
-
       # ============================================================
-      # 07 | TELEGRAM NOTIFICATION
+      # 07 | TELEGRAM NOTIFICATION (HTML)
       # ============================================================
       - name: "07 | Telegram Notification"
         shell: powershell
@@ -310,100 +187,52 @@ jobs:
           Write-Host "TELEGRAM NOTIFICATION"
           Write-Host "============================================================"
 
-          if ([string]::IsNullOrWhiteSpace($env:TELEGRAM_BOT_TOKEN)) {
-            Write-Error "TELEGRAM_BOT_TOKEN secret is missing."
+          if ([string]::IsNullOrWhiteSpace($env:TELEGRAM_BOT_TOKEN) -or [string]::IsNullOrWhiteSpace($env:TELEGRAM_CHAT_ID)) {
+            Write-Error "Telegram secrets missing."
             exit 1
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:TELEGRAM_CHAT_ID)) {
-            Write-Error "TELEGRAM_CHAT_ID secret is missing."
-            exit 1
-          }
-
-          $computerName = "gh-runner-$env:GITHUB_RUN_ID"
-
-          $cpuCount = (
-            Get-CimInstance Win32_Processor |
-            Measure-Object -Property NumberOfLogicalProcessors -Sum
-          ).Sum
-
-          $ramGB = [math]::Round(
-            (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB,
-            2
-          )
-
+          $cpuCount = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+          $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+          
           $storageLines = @()
-
-          Get-PSDrive -PSProvider FileSystem |
-            Where-Object { $_.Root -match '^[A-Z]:\\$' } |
-            ForEach-Object {
-              $total = [math]::Round(
-                ($_.Used + $_.Free) / 1GB,
-                2
-              )
-
-              $free = [math]::Round(
-                $_.Free / 1GB,
-                2
-              )
-
-              $storageLines += "$($_.Name): $free GB free / $total GB"
-            }
-
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
+            $free = [math]::Round($_.Free / 1GB, 2)
+            $storageLines += "    <code>$($_.Name)</code> $free GB free"
+          }
           $storage = $storageLines -join "`n"
 
-          $message = @(
-            "RDP SERVER ONLINE"
-            ""
-            "Server"
-            "$computerName"
-            ""
-            "Tailscale IP"
-            "$env:TAILSCALE_IP"
-            ""
-            "RDP Port"
-            "3389"
-            ""
-            "Username"
-            "$env:RDP_USERNAME"
-            ""
-            "CPU"
-            "$cpuCount logical cores"
-            ""
-            "RAM"
-            "$ramGB GB"
-            ""
-            "Storage"
-            "$storage"
-            ""
-            "Maximum Runtime"
-            "6 Hours"
-            ""
-            "Repository"
-            "$env:GITHUB_REPOSITORY"
-            ""
-            "Run ID"
-            "$env:GITHUB_RUN_ID"
-            ""
-            "Status"
-            "READY"
-          ) -join "`n"
+          $githubLogUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
-          $response = Invoke-RestMethod `
-            -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" `
-            -Method Post `
-            -Body @{
-              chat_id = $env:TELEGRAM_CHAT_ID
-              text = $message
-            }
+          $htmlMessage = @"
+          🖥️ <b>GITHUB RDP ONLINE</b> 🟢
 
-          if (-not $response.ok) {
-            Write-Error "Telegram API rejected the message: $($response.description)"
-            exit 1
+          <b>⚙️ SYSTEM SPECS</b>
+          • <b>CPU:</b> $cpuCount logical cores
+          • <b>RAM:</b> $ramGB GB
+          • <b>Storage:</b> 
+          $storage
+
+          <b>🔌 CONNECTION DETAILS</b>
+          • <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
+          • <b>Port:</b> <code>3389</code>
+          • <b>Username:</b> <code>$env:RDP_USERNAME</code>
+
+          <b>⏱️ SESSION INFO</b>
+          • <b>Max Runtime:</b> 6 Hours
+          • <b>Controls:</b> Send /status or /stop
+          • <a href="$githubLogUrl">View GitHub Action Logs</a>
+          "@
+
+          $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
+            chat_id = $env:TELEGRAM_CHAT_ID
+            text = $htmlMessage
+            parse_mode = "HTML"
+            disable_web_page_preview = $true
           }
 
-          Write-Host "[ OK ] Telegram notification sent successfully."
-
+          if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
+          Write-Host "[ OK ] HTML Telegram notification sent successfully."
 
       # ============================================================
       # 08 | RDP READY
@@ -417,125 +246,84 @@ jobs:
           Write-Host "============================================================"
           Write-Host "Server       : gh-runner-$env:GITHUB_RUN_ID"
           Write-Host "Tailscale IP : $env:TAILSCALE_IP"
-          Write-Host "RDP Port     : 3389"
-          Write-Host "Runtime      : 6 Hours"
           Write-Host "Status       : READY"
           Write-Host "============================================================"
           Write-Host ""
 
-
       # ============================================================
-      # 09 | LIVE MONITOR
+      # 09 | LIVE MONITOR & TELEGRAM BOT LISTENER
       # ============================================================
-      - name: "09 | Live Monitor"
+      - name: "09 | Live Monitor & Bot Listener"
         shell: powershell
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           Write-Host "============================================================"
-          Write-Host "LIVE RDP MONITOR"
+          Write-Host "LIVE RDP MONITOR & COMMAND LISTENER"
           Write-Host "============================================================"
-          Write-Host "The runner will remain online until the 6-hour job timeout."
+          Write-Host "Listening for /status or /stop commands on Telegram..."
           Write-Host ""
 
           $startTime = Get-Date
+          $updateId = 0
+          $stopRequested = $false
 
-          while ($true) {
-
+          while (-not $stopRequested) {
+            
             $now = Get-Date
-
             $uptime = $now - $startTime
 
-            $cpu = Get-CimInstance Win32_Processor |
-              Measure-Object -Property LoadPercentage -Average
-
-            $cpuUsage = [math]::Round(
-              $cpu.Average,
-              1
-            )
-
+            $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average
+            $cpuUsage = [math]::Round($cpu.Average, 1)
             $memory = Get-CimInstance Win32_OperatingSystem
+            $ramUsagePercent = [math]::Round((($memory.TotalVisibleMemorySize - $memory.FreePhysicalMemory) / $memory.TotalVisibleMemorySize) * 100, 1)
 
-            $totalMemory = [math]::Round(
-              $memory.TotalVisibleMemorySize / 1MB,
-              2
-            )
-
-            $freeMemory = [math]::Round(
-              $memory.FreePhysicalMemory / 1MB,
-              2
-            )
-
-            $usedMemory = [math]::Round(
-              $totalMemory - $freeMemory,
-              2
-            )
-
-            $memoryUsage = [math]::Round(
-              ($usedMemory / $totalMemory) * 100,
-              1
-            )
-
-            $rdp = Test-NetConnection `
-              -ComputerName "127.0.0.1" `
-              -Port 3389 `
-              -WarningAction SilentlyContinue
-
-            Write-Host ""
             Write-Host "------------------------------------------------------------"
-            Write-Host "TIME"
-            Write-Host "UTC : $($now.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))"
-            Write-Host "IST : $($now.ToUniversalTime().AddHours(5.5).ToString('yyyy-MM-dd HH:mm:ss'))"
+            Write-Host "[IST : $($now.ToUniversalTime().AddHours(5.5).ToString('yyyy-MM-dd HH:mm:ss'))]"
+            Write-Host "⏱️ Uptime: $($uptime.ToString('dd\.hh\:mm\:ss')) | 📊 CPU: $cpuUsage % | 🧠 RAM: $ramUsagePercent %"
+            Write-Host "------------------------------------------------------------"
 
-            Write-Host ""
-            Write-Host "UPTIME"
-            Write-Host "Elapsed : $($uptime.ToString('dd\.hh\:mm\:ss'))"
+            # 4. Network Keep-Alive (Silent HTTPS request)
+            Invoke-WebRequest -Uri "https://8.8.8.8" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 
-            Write-Host ""
-            Write-Host "CPU"
-            Write-Host "Usage : $cpuUsage %"
+            # Telegram Polling Loop: Runs 60 times (5 mins total) between logs
+            for ($i = 0; $i -lt 60; $i++) {
+              
+              # Poll Telegram for new messages silently
+              $tgUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$updateId&timeout=0"
+              $updates = Invoke-RestMethod -Uri $tgUrl -Method Get -ErrorAction SilentlyContinue
 
-            Write-Host ""
-            Write-Host "MEMORY"
-            Write-Host "Used : $usedMemory GB / $totalMemory GB"
-            Write-Host "Usage: $memoryUsage %"
+              if ($null -ne $updates -and $updates.ok -and $updates.result.Count -gt 0) {
+                foreach ($msg in $updates.result) {
+                  $updateId = $msg.update_id + 1
+                  $chatId = [string]$msg.message.chat.id
+                  $text = $msg.message.text
 
-            Write-Host ""
-            Write-Host "STORAGE"
-
-            Get-PSDrive -PSProvider FileSystem |
-              Where-Object { $_.Root -match '^[A-Z]:\\$' } |
-              ForEach-Object {
-
-                $total = [math]::Round(
-                  ($_.Used + $_.Free) / 1GB,
-                  2
-                )
-
-                $free = [math]::Round(
-                  $_.Free / 1GB,
-                  2
-                )
-
-                $used = [math]::Round(
-                  $_.Used / 1GB,
-                  2
-                )
-
-                Write-Host "$($_.Name): Used $used GB | Free $free GB | Total $total GB"
+                  # Security Verification: Only respond to YOUR chat ID
+                  if ($chatId -eq $env:TELEGRAM_CHAT_ID) {
+                    
+                    if ($text -match "^/stop") {
+                      Write-Host "[ ! ] Received /stop command from Telegram. Terminating session..."
+                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 Shutting down the RDP server immediately..." } -ErrorAction SilentlyContinue
+                      $stopRequested = $true
+                      break
+                    }
+                    elseif ($text -match "^/status") {
+                      Write-Host "[ INFO ] Received /status command. Sending reply..."
+                      $statusMsg = "📊 <b>LIVE STATUS</b>`n`n⏱️ <b>Uptime:</b> $($uptime.ToString('hh\:mm\:ss'))`n⚙️ <b>CPU Usage:</b> $cpuUsage %`n🧠 <b>RAM Usage:</b> $ramUsagePercent %"
+                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $statusMsg; parse_mode = "HTML" } -ErrorAction SilentlyContinue
+                    }
+                  }
+                }
               }
 
-            Write-Host ""
-            Write-Host "NETWORK"
-            Write-Host "Tailscale IP : $env:TAILSCALE_IP"
-
-            Write-Host ""
-            Write-Host "RDP"
-            Write-Host "Port 3389 : $($rdp.TcpTestSucceeded)"
-
-            Write-Host "------------------------------------------------------------"
-
-            Start-Sleep -Seconds 300
+              if ($stopRequested) { break }
+              
+              # Responsive Sleep
+              Start-Sleep -Seconds 5
+            }
           }
-
 
       # ============================================================
       # 10 | CLEANUP
@@ -552,12 +340,9 @@ jobs:
 
           if (Test-Path $tailscale) {
             Write-Host "[ INFO ] Disconnecting Tailscale..."
-
             & $tailscale logout
-
             Write-Host "[ OK ] Tailscale disconnected."
-          }
-          else {
+          } else {
             Write-Host "[ INFO ] Tailscale executable not found."
           }
 
