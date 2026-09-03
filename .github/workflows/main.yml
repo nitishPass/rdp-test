@@ -180,28 +180,100 @@ jobs:
 
 
       # ============================================================
-      # 07 | CUSTOMIZE ENVIRONMENT
+      # 07 | TELEGRAM NOTIFICATION (INITIAL)
       # ============================================================
-      - name: "07 | Customize Environment"
+      - name: "07 | Telegram Notification (Initial)"
+        shell: powershell
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
+        run: |
+          Write-Host "============================================================"
+          Write-Host "TELEGRAM NOTIFICATION (INITIAL)"
+          Write-Host "============================================================"
+
+          if ([string]::IsNullOrWhiteSpace($env:TELEGRAM_BOT_TOKEN) -or [string]::IsNullOrWhiteSpace($env:TELEGRAM_CHAT_ID)) {
+            Write-Error "Telegram secrets missing."
+            exit 1
+          }
+
+          $htmlMessage = @"
+          <b>[ GITHUB RDP ONLINE ]</b>
+
+          <b>CONNECTION DETAILS</b>
+          - <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
+          - <b>Port:</b> <code>3389</code>
+          - <b>Username:</b> <code>$env:RDP_USERNAME</code>
+
+          <b>STATUS</b>
+          [⏳] <i>Server is online! You can connect right now. A massive background cleanup to free up disk space is currently running...</i>
+          "@
+
+          $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
+            chat_id = $env:TELEGRAM_CHAT_ID
+            text = $htmlMessage
+            parse_mode = "HTML"
+            disable_web_page_preview = $true
+          }
+
+          if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
+          Write-Host "[ OK ] Initial HTML Telegram notification sent successfully."
+
+
+      # ============================================================
+      # 08 | CUSTOMIZE ENVIRONMENT
+      # ============================================================
+      - name: "08 | Customize Environment"
         shell: powershell
         run: |
           Write-Host "============================================================"
           Write-Host "CUSTOMIZING WINDOWS ENVIRONMENT"
           Write-Host "============================================================"
 
-          # 1. Reclaim C: Drive Space by deleting heavy developer SDKs
-          Write-Host "`n[ INFO ] Reclaiming disk space... (This may take several minutes)"
+          # 1. Reclaim C: Drive Space by deleting heavy developer SDKs and Frameworks
+          Write-Host "`n[ INFO ] Reclaiming disk space... (This will take 5-10 minutes to wipe millions of tiny files)"
+          
           $pathsToDelete = @(
+            # Root C:\ Bloat
             "C:\Android",
             "C:\hostedtoolcache\windows",
+            "C:\ghcup",
+            "C:\rtools45",
+            "C:\Julia",
+            "C:\Strawberry",
+            "C:\mingw64",
+            "C:\mingw32",
+            "C:\Miniconda",
+            "C:\msys64",
+            "C:\actionarchivecache",
+            "C:\npm",
+            "C:\vcpkg",
+            "C:\SeleniumWebDrivers",
+            "C:\selenium",
+            
+            # Program Files Bloat
             "C:\Program Files\Microsoft Visual Studio",
-            "C:\Program Files (x86)\Microsoft Visual Studio"
+            "C:\Program Files\dotnet",
+            "C:\Program Files\Azure Cosmos DB Emulator",
+            "C:\Program Files\LLVM",
+            "C:\Program Files\MongoDB",
+            "C:\Program Files\PostgreSQL",
+            "C:\Program Files\MySQL",
+            "C:\Program Files\Microsoft SQL Server",
+            "C:\Program Files\Microsoft Service Fabric",
+            
+            # Program Files (x86) Bloat
+            "C:\Program Files (x86)\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Android",
+            "C:\Program Files (x86)\Microsoft SDKs",
+            "C:\Program Files (x86)\Windows Kits",
+            "C:\Program Files (x86)\dotnet"
           )
 
           foreach ($path in $pathsToDelete) {
             if (Test-Path $path) {
               Write-Host "         Deleting: $path"
-              # Using cmd rmdir is significantly faster and more reliable than PowerShell's Remove-Item for deep nested files
               cmd.exe /c "rmdir /s /q `"$path`""
             }
           }
@@ -221,28 +293,22 @@ jobs:
 
 
       # ============================================================
-      # 08 | TELEGRAM NOTIFICATION (HTML)
+      # 09 | TELEGRAM NOTIFICATION (CLEANUP COMPLETE)
       # ============================================================
-      - name: "08 | Telegram Notification"
+      - name: "09 | Telegram Notification (Cleanup Complete)"
         shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
         run: |
           Write-Host "============================================================"
-          Write-Host "TELEGRAM NOTIFICATION"
+          Write-Host "TELEGRAM NOTIFICATION (CLEANUP COMPLETE)"
           Write-Host "============================================================"
-
-          if ([string]::IsNullOrWhiteSpace($env:TELEGRAM_BOT_TOKEN) -or [string]::IsNullOrWhiteSpace($env:TELEGRAM_CHAT_ID)) {
-            Write-Error "Telegram secrets missing."
-            exit 1
-          }
 
           $cpuCount = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
           
-          # Fetch storage after cleanup step so Telegram reports the newly freed space
+          # Fetch NEW storage after cleanup
           $storageLines = @()
           Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
             $free = [math]::Round($_.Free / 1GB, 2)
@@ -253,18 +319,17 @@ jobs:
           $githubLogUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
           $htmlMessage = @"
-          <b>[ GITHUB RDP ONLINE ]</b>
+          <b>[ ENVIRONMENT OPTIMIZED ]</b>
+
+          [+] Massive Developer Bloatware removed.
+          [+] Browser security restrictions disabled.
+          [+] Server Manager disabled.
 
           <b>SYSTEM SPECS</b>
           - <b>CPU:</b> $cpuCount logical cores
           - <b>RAM:</b> $ramGB GB
-          - <b>Storage:</b> 
+          - <b>Storage (Optimized):</b> 
           $storage
-
-          <b>CONNECTION DETAILS</b>
-          - <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
-          - <b>Port:</b> <code>3389</code>
-          - <b>Username:</b> <code>$env:RDP_USERNAME</code>
 
           <b>SESSION INFO</b>
           - <b>Max Runtime:</b> 6 Hours
@@ -279,19 +344,18 @@ jobs:
             disable_web_page_preview = $true
           }
 
-          if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
-          Write-Host "[ OK ] HTML Telegram notification sent successfully."
+          Write-Host "[ OK ] Cleanup Complete notification sent successfully."
 
 
       # ============================================================
-      # 09 | RDP READY
+      # 10 | RDP READY
       # ============================================================
-      - name: "09 | RDP Ready"
+      - name: "10 | RDP Ready"
         shell: powershell
         run: |
           Write-Host ""
           Write-Host "============================================================"
-          Write-Host "RDP SERVER READY"
+          Write-Host "RDP SERVER READY AND OPTIMIZED"
           Write-Host "============================================================"
           Write-Host "Server       : gh-runner-$env:GITHUB_RUN_ID"
           Write-Host "Tailscale IP : $env:TAILSCALE_IP"
@@ -301,9 +365,9 @@ jobs:
 
 
       # ============================================================
-      # 10 | LIVE MONITOR & TELEGRAM BOT LISTENER
+      # 11 | LIVE MONITOR & TELEGRAM BOT LISTENER
       # ============================================================
-      - name: "10 | Live Monitor & Bot Listener"
+      - name: "11 | Live Monitor & Bot Listener"
         shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -392,9 +456,9 @@ jobs:
 
 
       # ============================================================
-      # 11 | CLEANUP
+      # 12 | CLEANUP
       # ============================================================
-      - name: "11 | Cleanup Tailscale"
+      - name: "12 | Cleanup Tailscale"
         if: always()
         shell: powershell
         run: |
