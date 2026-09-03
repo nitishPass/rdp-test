@@ -36,6 +36,7 @@ jobs:
           }
           Write-Host "============================================================"
 
+
       # ============================================================
       # 02 | CONFIGURE RDP
       # ============================================================
@@ -56,6 +57,7 @@ jobs:
           Write-Host "[ OK ] RDP enabled."
           Write-Host "[ OK ] Firewall configured."
           Write-Host "[ OK ] Remote Desktop service restarted."
+
 
       # ============================================================
       # 03 | CONFIGURE RDP USER
@@ -89,6 +91,7 @@ jobs:
 
           Write-Host "[ OK ] User added to Administrators and Remote Desktop Users."
 
+
       # ============================================================
       # 04 | INSTALL TAILSCALE
       # ============================================================
@@ -118,6 +121,7 @@ jobs:
             if (-not (Test-Path $tailscale)) { Write-Error "Tailscale installation failed."; exit 1 }
             Write-Host "[ OK ] Tailscale installed."
           }
+
 
       # ============================================================
       # 05 | CONNECT TAILSCALE
@@ -158,6 +162,7 @@ jobs:
 
           Write-Host "TAILSCALE Status: CONNECTED | IPv4: $tailscaleIP"
 
+
       # ============================================================
       # 06 | VERIFY RDP
       # ============================================================
@@ -172,6 +177,7 @@ jobs:
           Write-Host "Listening: $($result.TcpTestSucceeded)"
           if (-not $result.TcpTestSucceeded) { Write-Error "RDP port 3389 is not reachable."; exit 1 }
           Write-Host "[ OK ] RDP port 3389 is OPEN."
+
 
       # ============================================================
       # 07 | TELEGRAM NOTIFICATION (HTML)
@@ -204,24 +210,25 @@ jobs:
 
           $githubLogUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 
+          # Using clean ASCII and HTML formatting to avoid encoding errors
           $htmlMessage = @"
-          🖥️ <b>GITHUB RDP ONLINE</b> 🟢
+          <b>[ GITHUB RDP ONLINE ]</b>
 
-          <b>⚙️ SYSTEM SPECS</b>
-          • <b>CPU:</b> $cpuCount logical cores
-          • <b>RAM:</b> $ramGB GB
-          • <b>Storage:</b> 
+          <b>SYSTEM SPECS</b>
+          - <b>CPU:</b> $cpuCount logical cores
+          - <b>RAM:</b> $ramGB GB
+          - <b>Storage:</b> 
           $storage
 
-          <b>🔌 CONNECTION DETAILS</b>
-          • <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
-          • <b>Port:</b> <code>3389</code>
-          • <b>Username:</b> <code>$env:RDP_USERNAME</code>
+          <b>CONNECTION DETAILS</b>
+          - <b>IP Address:</b> <code>$env:TAILSCALE_IP</code> <i>(Tap to copy)</i>
+          - <b>Port:</b> <code>3389</code>
+          - <b>Username:</b> <code>$env:RDP_USERNAME</code>
 
-          <b>⏱️ SESSION INFO</b>
-          • <b>Max Runtime:</b> 6 Hours
-          • <b>Controls:</b> Send /status or /stop
-          • <a href="$githubLogUrl">View GitHub Action Logs</a>
+          <b>SESSION INFO</b>
+          - <b>Max Runtime:</b> 6 Hours
+          - <b>Controls:</b> Send /status or /stop
+          - <a href="$githubLogUrl">View GitHub Action Logs</a>
           "@
 
           $response = Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{
@@ -233,6 +240,7 @@ jobs:
 
           if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
           Write-Host "[ OK ] HTML Telegram notification sent successfully."
+
 
       # ============================================================
       # 08 | RDP READY
@@ -249,6 +257,7 @@ jobs:
           Write-Host "Status       : READY"
           Write-Host "============================================================"
           Write-Host ""
+
 
       # ============================================================
       # 09 | LIVE MONITOR & TELEGRAM BOT LISTENER
@@ -281,10 +290,12 @@ jobs:
 
             Write-Host "------------------------------------------------------------"
             Write-Host "[IST : $($now.ToUniversalTime().AddHours(5.5).ToString('yyyy-MM-dd HH:mm:ss'))]"
-            Write-Host "⏱️ Uptime: $($uptime.ToString('dd\.hh\:mm\:ss')) | 📊 CPU: $cpuUsage % | 🧠 RAM: $ramUsagePercent %"
+            
+            # Removed emojis to prevent parsing corruption on Windows runners
+            Write-Host "Uptime: $($uptime.ToString('dd\.hh\:mm\:ss')) | CPU: $cpuUsage % | RAM: $ramUsagePercent %"
             Write-Host "------------------------------------------------------------"
 
-            # 4. Network Keep-Alive (Silent HTTPS request)
+            # Network Keep-Alive (Silent HTTPS request)
             Invoke-WebRequest -Uri "https://8.8.8.8" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 
             # Telegram Polling Loop: Runs 60 times (5 mins total) between logs
@@ -305,13 +316,13 @@ jobs:
                     
                     if ($text -match "^/stop") {
                       Write-Host "[ ! ] Received /stop command from Telegram. Terminating session..."
-                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 Shutting down the RDP server immediately..." } -ErrorAction SilentlyContinue
+                      Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "Shutting down the RDP server immediately..." } -ErrorAction SilentlyContinue
                       $stopRequested = $true
                       break
                     }
                     elseif ($text -match "^/status") {
                       Write-Host "[ INFO ] Received /status command. Sending reply..."
-                      $statusMsg = "📊 <b>LIVE STATUS</b>`n`n⏱️ <b>Uptime:</b> $($uptime.ToString('hh\:mm\:ss'))`n⚙️ <b>CPU Usage:</b> $cpuUsage %`n🧠 <b>RAM Usage:</b> $ramUsagePercent %"
+                      $statusMsg = "<b>[ LIVE STATUS ]</b>`n`n<b>Uptime:</b> $($uptime.ToString('hh\:mm\:ss'))`n<b>CPU Usage:</b> $cpuUsage %`n<b>RAM Usage:</b> $ramUsagePercent %"
                       Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $statusMsg; parse_mode = "HTML" } -ErrorAction SilentlyContinue
                     }
                   }
@@ -324,6 +335,7 @@ jobs:
               Start-Sleep -Seconds 5
             }
           }
+
 
       # ============================================================
       # 10 | CLEANUP
