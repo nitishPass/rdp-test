@@ -36,6 +36,7 @@ jobs:
           }
           Write-Host "============================================================"
 
+
       # ============================================================
       # 02 | CONFIGURE RDP
       # ============================================================
@@ -56,6 +57,7 @@ jobs:
           Write-Host "[ OK ] RDP enabled."
           Write-Host "[ OK ] Firewall configured."
           Write-Host "[ OK ] Remote Desktop service restarted."
+
 
       # ============================================================
       # 03 | CONFIGURE RDP USER
@@ -89,6 +91,7 @@ jobs:
 
           Write-Host "[ OK ] User added to Administrators and Remote Desktop Users."
 
+
       # ============================================================
       # 04 | INSTALL TAILSCALE
       # ============================================================
@@ -106,14 +109,19 @@ jobs:
           } else {
             $installer = "$env:TEMP\tailscale-installer.msi"
             Write-Host "[ INFO ] Downloading Tailscale 1.82.0..."
+            
+            # Silent web request to prevent log bloat
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
+            
             Write-Host "[ OK ] Download completed."
             Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
             Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
             if (-not (Test-Path $tailscale)) { Write-Error "Tailscale installation failed."; exit 1 }
             Write-Host "[ OK ] Tailscale installed."
           }
+
 
       # ============================================================
       # 05 | CONNECT TAILSCALE
@@ -137,6 +145,7 @@ jobs:
           $tailscaleExitCode = $LASTEXITCODE
           if ($tailscaleExitCode -ne 0) { Write-Error "Tailscale failed to connect. Exit code: $tailscaleExitCode"; exit $tailscaleExitCode }
 
+          # Dynamic IP Retry Loop
           $tailscaleIP = $null
           $retries = 0
           Write-Host "[ INFO ] Waiting for Tailscale IPv4 address..."
@@ -145,11 +154,14 @@ jobs:
             $tailscaleIP = & $tailscale ip -4 | Select-Object -First 1
             $retries++
           }
+
           if ([string]::IsNullOrWhiteSpace($tailscaleIP)) { Write-Error "Could not obtain Tailscale IPv4 address."; exit 1 }
 
           $tailscaleIP = $tailscaleIP.Trim()
           "TAILSCALE_IP=$tailscaleIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
           Write-Host "TAILSCALE Status: CONNECTED | IPv4: $tailscaleIP"
+
 
       # ============================================================
       # 06 | VERIFY RDP
@@ -165,6 +177,7 @@ jobs:
           Write-Host "Listening: $($result.TcpTestSucceeded)"
           if (-not $result.TcpTestSucceeded) { Write-Error "RDP port 3389 is not reachable."; exit 1 }
           Write-Host "[ OK ] RDP port 3389 is OPEN."
+
 
       # ============================================================
       # 07 | TELEGRAM NOTIFICATION (INITIAL)
@@ -203,8 +216,10 @@ jobs:
             parse_mode = "HTML"
             disable_web_page_preview = $true
           }
+
           if (-not $response.ok) { Write-Error "Telegram API rejected the message."; exit 1 }
           Write-Host "[ OK ] Initial HTML Telegram notification sent successfully."
+
 
       # ============================================================
       # 08 | CUSTOMIZE ENVIRONMENT
@@ -218,21 +233,57 @@ jobs:
 
           # 1. Reclaim C: Drive Space
           Write-Host "`n[ INFO ] Reclaiming disk space... (This will take 5-10 minutes to wipe millions of tiny files)"
+          
           $pathsToDelete = @(
-            "C:\Android", "C:\hostedtoolcache\windows", "C:\ghcup", "C:\rtools45", "C:\Julia", 
-            "C:\Strawberry", "C:\mingw64", "C:\mingw32", "C:\Miniconda", "C:\msys64", 
-            "C:\actionarchivecache", "C:\npm", "C:\vcpkg", "C:\SeleniumWebDrivers", "C:\selenium",
-            "C:\PostgreSQL", "C:\cobertura-2.1.1", "C:\tools\php", "C:\tools\kotlinc",
-            "C:\Program Files\Microsoft Visual Studio", "C:\Program Files\dotnet", 
-            "C:\Program Files\Azure Cosmos DB Emulator", "C:\Program Files\LLVM", "C:\Program Files\MongoDB", 
-            "C:\Program Files\mongosh", "C:\Program Files\PostgreSQL", "C:\Program Files\MySQL", 
-            "C:\Program Files\Microsoft SQL Server", "C:\Program Files\Microsoft Service Fabric", 
-            "C:\Program Files\OpenSSL", "C:\Program Files\nodejs", "C:\Program Files\CMake",
-            "C:\Program Files (x86)\Microsoft Visual Studio", "C:\Program Files (x86)\Android", 
-            "C:\Program Files (x86)\Microsoft SDKs", "C:\Program Files (x86)\Windows Kits", 
-            "C:\Program Files (x86)\dotnet", "C:\Program Files (x86)\Microsoft Analysis Services", 
-            "C:\Program Files (x86)\WiX Toolset v3.14", "C:\ProgramData\Package Cache"
+            # Root C:\ Bloat
+            "C:\Android",
+            "C:\hostedtoolcache\windows",
+            "C:\ghcup",
+            "C:\rtools45",
+            "C:\Julia",
+            "C:\Strawberry",
+            "C:\mingw64",
+            "C:\mingw32",
+            "C:\Miniconda",
+            "C:\msys64",
+            "C:\actionarchivecache",
+            "C:\npm",
+            "C:\vcpkg",
+            "C:\SeleniumWebDrivers",
+            "C:\selenium",
+            "C:\PostgreSQL",
+            "C:\cobertura-2.1.1",
+            "C:\tools\php",
+            "C:\tools\kotlinc",
+            
+            # Program Files Bloat
+            "C:\Program Files\Microsoft Visual Studio",
+            "C:\Program Files\dotnet",
+            "C:\Program Files\Azure Cosmos DB Emulator",
+            "C:\Program Files\LLVM",
+            "C:\Program Files\MongoDB",
+            "C:\Program Files\mongosh",
+            "C:\Program Files\PostgreSQL",
+            "C:\Program Files\MySQL",
+            "C:\Program Files\Microsoft SQL Server",
+            "C:\Program Files\Microsoft Service Fabric",
+            "C:\Program Files\OpenSSL",
+            "C:\Program Files\nodejs",
+            "C:\Program Files\CMake",
+            
+            # Program Files (x86) Bloat
+            "C:\Program Files (x86)\Microsoft Visual Studio",
+            "C:\Program Files (x86)\Android",
+            "C:\Program Files (x86)\Microsoft SDKs",
+            "C:\Program Files (x86)\Windows Kits",
+            "C:\Program Files (x86)\dotnet",
+            "C:\Program Files (x86)\Microsoft Analysis Services",
+            "C:\Program Files (x86)\WiX Toolset v3.14",
+            
+            # ProgramData Bloat
+            "C:\ProgramData\Package Cache"
           )
+
           foreach ($path in $pathsToDelete) {
             if (Test-Path $path) {
               Write-Host "         Deleting: $path"
@@ -241,7 +292,7 @@ jobs:
           }
           Write-Host "[ OK ] Bloatware deleted successfully."
 
-          # 2. Disable IE Enhanced Security
+          # 2. Disable Internet Explorer Enhanced Security Configuration (IE ESC)
           Write-Host "`n[ INFO ] Disabling IE Enhanced Security Configuration..."
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A8-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
@@ -262,7 +313,11 @@ jobs:
           $publicDesktop = "C:\Users\Public\Desktop"
           
           # WizTree Shortcut
-          $wizExePaths = @("C:\Program Files\WizTree\WizTree64.exe", "C:\Program Files\WizTree\WizTree.exe", "C:\Program Files (x86)\WizTree\WizTree.exe")
+          $wizExePaths = @(
+            "C:\Program Files\WizTree\WizTree64.exe", 
+            "C:\Program Files\WizTree\WizTree.exe", 
+            "C:\Program Files (x86)\WizTree\WizTree.exe"
+          )
           foreach ($path in $wizExePaths) {
             if (Test-Path $path) {
               $WshShell = New-Object -ComObject WScript.Shell
@@ -273,7 +328,7 @@ jobs:
             }
           }
 
-          # Self-Destruct Shortcut
+          # FIX: Self-Destruct Shortcut to Public Directory to bypass UAC limits
           $batPath = "$publicDesktop\SHUTDOWN_RUNNER.bat"
           $batContent = @"
           @echo off
@@ -283,13 +338,14 @@ jobs:
           echo ==========================================
           echo.
           echo Sending stop signal to GitHub Actions...
-          echo stop > C:\stop_runner.txt
+          echo stop > C:\Users\Public\stop_runner.txt
           echo.
           echo The server will disconnect in a few seconds.
           timeout /t 5 >nul
           "@
           Set-Content -Path $batPath -Value $batContent
           Write-Host "[ OK ] Shortcuts created successfully."
+
 
       # ============================================================
       # 09 | TELEGRAM NOTIFICATION (CLEANUP COMPLETE)
@@ -307,6 +363,7 @@ jobs:
           $cpuCount = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
           $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
           
+          # Fetch NEW storage after cleanup
           $storageLines = @()
           Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\$' } | ForEach-Object {
             $free = [math]::Round($_.Free / 1GB, 2)
@@ -342,7 +399,9 @@ jobs:
             parse_mode = "HTML"
             disable_web_page_preview = $true
           } | Out-Null
-          Write-Host "[ OK ] Cleanup Complete notification sent."
+
+          Write-Host "[ OK ] Cleanup Complete notification sent successfully."
+
 
       # ============================================================
       # 10 | RDP READY
@@ -360,6 +419,7 @@ jobs:
           Write-Host "============================================================"
           Write-Host ""
 
+
       # ============================================================
       # 11 | LIVE MONITOR & TELEGRAM BOT LISTENER
       # ============================================================
@@ -373,6 +433,7 @@ jobs:
           Write-Host "LIVE RDP MONITOR & COMMAND LISTENER"
           Write-Host "============================================================"
           
+          # --- FIX: FLUSH OLD TELEGRAM MESSAGES ---
           Write-Host "[ INFO ] Flushing old Telegram messages from previous runs..."
           $tgBaseUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN"
           $flushUpdates = Invoke-RestMethod -Uri "$tgBaseUrl/getUpdates" -Method Get -ErrorAction SilentlyContinue
@@ -409,7 +470,8 @@ jobs:
 
             for ($i = 0; $i -lt 60; $i++) {
               
-              if (Test-Path "C:\stop_runner.txt") {
+              # FIX: Checking the Public directory for the Self-Destruct signal
+              if (Test-Path "C:\Users\Public\stop_runner.txt") {
                 Write-Host "[ ! ] Self-Destruct triggered from Desktop! Terminating session..."
                 Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 <b>Self-Destruct activated from the Remote Desktop.</b> Shutting down immediately..." ; parse_mode = "HTML" } -ErrorAction SilentlyContinue
                 $stopRequested = $true
@@ -426,6 +488,7 @@ jobs:
                   $text = $msg.message.text
 
                   if ($chatId -eq $env:TELEGRAM_CHAT_ID) {
+                    
                     if ($text -match "^/stop") {
                       Write-Host "[ ! ] Received /stop command from Telegram. Terminating session..."
                       Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 <b>Shutting down the RDP server immediately...</b>" ; parse_mode = "HTML" } -ErrorAction SilentlyContinue
@@ -446,6 +509,7 @@ jobs:
             }
           }
 
+
       # ============================================================
       # 12 | CLEANUP
       # ============================================================
@@ -458,6 +522,7 @@ jobs:
           Write-Host "============================================================"
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
           if (Test-Path $tailscale) {
             Write-Host "[ INFO ] Disconnecting Tailscale..."
             & $tailscale logout
@@ -465,4 +530,5 @@ jobs:
           } else {
             Write-Host "[ INFO ] Tailscale executable not found."
           }
+
           Write-Host "Cleanup completed."
