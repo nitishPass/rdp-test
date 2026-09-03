@@ -303,6 +303,26 @@ jobs:
           Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           Write-Host "[ OK ] Server Manager disabled."
+          
+          # 4. Create Self-Destruct Button on Desktop
+          Write-Host "`n[ INFO ] Creating Self-Destruct button..."
+          $publicDesktop = "C:\Users\Public\Desktop"
+          $batPath = "$publicDesktop\SHUTDOWN_RUNNER.bat"
+          $batContent = @"
+          @echo off
+          color 4F
+          echo ==========================================
+          echo      INITIATING SELF-DESTRUCT...
+          echo ==========================================
+          echo.
+          echo Sending stop signal to GitHub Actions...
+          echo stop > C:\stop_runner.txt
+          echo.
+          echo The server will disconnect in a few seconds.
+          timeout /t 5 >nul
+          "@
+          Set-Content -Path $batPath -Value $batContent
+          Write-Host "[ OK ] Self-Destruct button created."
 
 
       # ============================================================
@@ -337,6 +357,7 @@ jobs:
           [+] Massive Developer Bloatware removed.
           [+] Browser security restrictions disabled.
           [+] Server Manager disabled.
+          [+] Self-Destruct button added to Desktop.
 
           <b>SYSTEM SPECS</b>
           - <b>CPU:</b> $cpuCount logical cores
@@ -429,10 +450,18 @@ jobs:
             # Network Keep-Alive (Silent HTTPS request)
             Invoke-WebRequest -Uri "https://8.8.8.8" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 
-            # Telegram Polling Loop: Runs 60 times (5 mins total) between logs
+            # Polling Loop: Runs 60 times (5 mins total) between logs
             for ($i = 0; $i -lt 60; $i++) {
               
-              # Poll Telegram for new messages silently
+              # 1. Desktop Self-Destruct Listener
+              if (Test-Path "C:\stop_runner.txt") {
+                Write-Host "[ ! ] Self-Destruct triggered from Desktop! Terminating session..."
+                Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 Self-Destruct activated from the Remote Desktop. Shutting down immediately..." } -ErrorAction SilentlyContinue
+                $stopRequested = $true
+                break
+              }
+
+              # 2. Poll Telegram for new messages silently
               $tgUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$updateId&timeout=0"
               $updates = Invoke-RestMethod -Uri $tgUrl -Method Get -ErrorAction SilentlyContinue
 
