@@ -61,7 +61,7 @@ try {
         Start-Service $Config.rdp.serviceName
     }
 
-    # 5. RDP User Provisioning (Reading from Process Environment)
+    # 5. RDP User Provisioning
     if ($env:RDP_USERNAME -and $env:RDP_PASSWORD) {
         $secPass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
         if (-not (Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue)) {
@@ -90,15 +90,12 @@ try {
     $sessionState | ConvertTo-Json | Set-Content $sessionStateFile
     Write-Log "Session state written to $sessionStateFile" "SUCCESS"
 
-    # 7. Export outputs for GitHub Actions
-    "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-    # 8. Start Telegram BotService (Phase 2)
+    # 7. Start Telegram BotService (Phase 2 - Modified)
     Write-Log "Launching Telegram BotService in background..." "INFO"
     $BotServicePath = Join-Path $PSScriptRoot "BotService.ps1"
     
-    # Run in an independent PowerShell process. It automatically inherits the current environment variables.
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$BotServicePath`"" -WindowStyle Hidden
+    # We now explicitly pass the WorkspacePath so the bot knows exactly where to write its log file!
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$BotServicePath`" -WorkspacePath `"$workspacePath`"" -WindowStyle Hidden
     Write-Log "BotService launched successfully." "SUCCESS"
 
 } catch {
