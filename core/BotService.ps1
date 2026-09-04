@@ -15,7 +15,7 @@ function Write-BotLog {
     if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
     $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
     Add-Content -Path $LogFile -Value $logEntry
-    Write-Host $logEntry # Also output to GitHub Actions console
+    Write-Host $logEntry
 }
 
 Write-BotLog "=== BOT SERVICE PROCESS STARTED ===" "INFO"
@@ -65,8 +65,8 @@ function Get-SystemStatus {
         $drive = Get-PSDrive -Name $driveLetter
         $disk = [math]::Round((($drive.Used) / ($drive.Used + $drive.Free)) * 100, 1)
         
-        # FIXED: Wrapped driveLetter in {} so PowerShell parses the colon correctly
-        return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk (${driveLetter}:): $disk`%"
+        # FIXED: Using PowerShell native newlines (`n) instead of %0A
+        return "🖥️ <b>SYSTEM STATUS</b>`nCPU: $cpu%`nRAM: $ram%`nWorkspace Disk (${driveLetter}:): $disk%"
     } catch {
         return "⚠️ Error generating system status."
     }
@@ -78,13 +78,14 @@ function Get-SystemStatus {
 function Route-Command {
     param ([string]$Command)
     
-    $cmd = $Command.ToLower().Trim()
+    # FIXED: Convert to lowercase, trim spaces, and strip out the @bot_username suffix
+    $cmd = $Command.ToLower().Trim() -replace '@.*', ''
     Write-BotLog "Routing command: $cmd" "INFO"
     
     if ($Config.telegram.commands.lightweight -contains $cmd) {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/help" { Send-TelegramMessage "🤖 <b>Available Commands:</b>%0A/ping - Check connectivity%0A/status - Generate system report" }
+            "/help" { Send-TelegramMessage "🤖 <b>Available Commands:</b>`n/ping - Check connectivity`n/status - Generate system report" }
         }
         return
     }
@@ -99,7 +100,7 @@ function Route-Command {
         switch ($cmd) {
             "/status" { 
                 $result = Get-SystemStatus 
-                Send-TelegramMessage "✅ Job <code>$jobId</code> completed.`n%0A$result"
+                Send-TelegramMessage "✅ Job <code>$jobId</code> completed.`n`n$result"
             }
         }
         return
