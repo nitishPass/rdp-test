@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    RDP Manager - Phase 1 Bootstrap
+    RDP Manager - Phase 1 & 2 Bootstrap
 .DESCRIPTION
     Validates configuration, dynamically allocates workspace storage, 
-    initializes RDP, and writes initial session state.
+    initializes RDP, writes initial session state, and spawns BotService.
 #>
 
 [CmdletBinding()]
@@ -93,11 +93,6 @@ try {
     # 7. Export outputs for GitHub Actions
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-} catch {
-    Write-Log $_.Exception.Message "ERROR"
-    exit 1
-}
-
     # 8. Start Telegram BotService (Phase 2)
     Write-Log "Launching Telegram BotService in background..." "INFO"
     $BotServicePath = Join-Path $PSScriptRoot "BotService.ps1"
@@ -105,3 +100,8 @@ try {
     # Run in an independent PowerShell process. It automatically inherits the current environment variables.
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$BotServicePath`"" -WindowStyle Hidden
     Write-Log "BotService launched successfully." "SUCCESS"
+
+} catch {
+    Write-Log $_.Exception.Message "ERROR"
+    exit 1
+}
