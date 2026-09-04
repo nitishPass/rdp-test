@@ -65,7 +65,8 @@ function Get-SystemStatus {
         $drive = Get-PSDrive -Name $driveLetter
         $disk = [math]::Round((($drive.Used) / ($drive.Used + $drive.Free)) * 100, 1)
         
-        return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk ($driveLetter:): $disk`%"
+        # FIXED: Wrapped driveLetter in {} so PowerShell parses the colon correctly
+        return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk (${driveLetter}:): $disk`%"
     } catch {
         return "⚠️ Error generating system status."
     }
