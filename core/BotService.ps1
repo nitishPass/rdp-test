@@ -35,7 +35,7 @@ $JobCounter = 1
 
 $global:DashboardMessageId = $null
 $global:DashboardLastUpdate = [DateTime]::MinValue
-$global:JobMessageMap = @{} # Tracks active Job messages for progress editing
+$global:JobMessageMap = @{}
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 Initialize-JobManager
@@ -103,10 +103,13 @@ function Format-ETA([double]$Speed, [double]$Remaining) {
 function Route-Command {
     param ([string]$CommandText)
     
-    $parts = ($CommandText.ToLower().Trim() -replace '@.*', '') -split '\s+', 2
-    $cmd = $parts[0]
+    # FIXED: Replaced '@.*' with '@\S+' so it doesn't delete the URL!
+    $cleanCommand = $CommandText.Trim() -replace '@\S+', ''
+    $parts = $cleanCommand -split '\s+', 2
+    
+    $cmd = $parts[0].ToLower()
     $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
-    $rawUrl = if ($parts.Count -gt 1) { ($CommandText.Trim() -replace '@.*', '') -split '\s+', 2 | Select-Object -Last 1 } else { "" }
+    $rawUrl = $args
     
     Write-BotLog "Routing command: $cmd" "INFO"
     
@@ -124,7 +127,8 @@ function Route-Command {
             }
             "/downloads" {
                 try {
-                    $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.tellActive" } | ConvertTo-Json
+                    # FIXED: Using strict JSON string
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellActive`" }"
                     $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
                     if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
                     $out = "📥 <b>ACTIVE DOWNLOADS</b>`n"
@@ -160,22 +164,28 @@ function Route-Command {
                 $sb = {
                     param($JobId, $Url, $RpcPort, $CancelDict, $ProgressDict)
                     $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
+                    $safeUrl = $Url -replace '"', '\"'
                     
-                    $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.addUri"; params = @(@($Url)) } | ConvertTo-Json -Depth 5
+                    # FIXED: Hardcoded exact JSON string to bypass PowerShell flattening
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"]] }"
+                    
                     $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                     $gid = $res.result
-                    if (-not $gid) { throw "Failed to get GID from aria2" }
+                    if (-not $gid) { 
+                        if ($res.error) { throw "aria2 error: $($res.error.message)" }
+                        throw "Failed to get GID from aria2." 
+                    }
                     
                     $completed = $false
                     while (-not $completed) {
                         Start-Sleep -Seconds 2
                         if ($CancelDict.ContainsKey($JobId)) {
-                            $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.remove"; params = @($gid) } | ConvertTo-Json
+                            $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                             Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
                             throw "Cancelled by user (Data preserved for resume)."
                         }
                         
-                        $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.tellStatus"; params = @($gid) } | ConvertTo-Json
+                        $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellStatus`", `"params`": [`"$gid`"] }"
                         $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                         $info = $statusRes.result
                         
@@ -188,6 +198,11 @@ function Route-Command {
                     return "✅ Download successfully completed!"
                 }
                 Submit-Job -JobId $jobId -CommandName "$cmd" -ScriptBlock $sb -ArgumentList @($jobId, $rawUrl, $Config.aria2.rpcPort, $global:JobManager_CancelDict, $global:JobManager_ProgressDict)
+            }
+            "/testjob" {
+                $seconds = if ($args -match '^\d+$') { [int]$args } else { 15 }
+                $sb = { param($Secs); Start-Sleep -Seconds $Secs; return "⏳ Test completed ($Secs s)" }
+                Submit-Job -JobId $jobId -CommandName "$cmd $seconds" -ScriptBlock $sb -ArgumentList @($seconds)
             }
             "/diagnostics" {
                 $sb = {
