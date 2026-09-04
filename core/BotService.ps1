@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 6)
+    RDP Manager - BotService (Phase 6.1)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -51,10 +51,41 @@ function Edit-TelegramMessage {
     } catch { }
 }
 
+function Get-LiveDashboardText {
+    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
+    $os = Get-CimInstance Win32_OperatingSystem
+    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
+    $drvLet = if ($WorkspacePath) { $WorkspacePath.Substring(0,1) } else { "C" }
+    $drv = Get-PSDrive -Name $drvLet
+    $disk = [math]::Round((($drv.Used) / ($drv.Used + $drv.Free)) * 100, 1)
+    $uptime = (Get-Date) - $StartTime
+    $upStr = "{0:00}:{1:00}:{2:00}" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+    $jStats = Get-JobManagerStats
+
+    $out = "┌─────────────────────────────┐`n│ 🖥️ <b>RDP MANAGER DASHBOARD</b>`n│ ───────────────────────────`n│ 🟢 SYSTEM ONLINE`n│`n"
+    $out += "│ CPU  $cpu%`n│ RAM  $ram%`n│ DISK $disk% (${drvLet}:)`n│`n"
+    $out += "│ Jobs: $($jStats.Running) RUNNING`n│ Uptime: $upStr`n│ Updated: $((Get-Date).ToString('HH:mm:ss'))`n└─────────────────────────────┘"
+    return $out
+}
+
 function Format-Bytes([double]$Bytes) {
     if ($Bytes -gt 1GB) { return "$([math]::Round($Bytes/1GB, 2)) GB" }
     if ($Bytes -gt 1MB) { return "$([math]::Round($Bytes/1MB, 2)) MB" }
     return "$([math]::Round($Bytes/1KB, 2)) KB"
+}
+
+function Get-ProgressBar([double]$Percent) {
+    $filled = [math]::Floor($Percent / 10); $empty = 10 - $filled
+    return ("█" * $filled) + ("░" * $empty)
+}
+
+function Format-ETA([double]$Speed, [double]$Remaining) {
+    if ($Speed -le 0) { return "∞" }
+    $secs = [math]::Round($Remaining / $Speed)
+    $ts = [timespan]::fromseconds($secs)
+    if ($ts.Hours -gt 0) { return "{0}h {1}m" -f $ts.Hours, $ts.Minutes }
+    if ($ts.Minutes -gt 0) { return "{0}m {1}s" -f $ts.Minutes, $ts.Seconds }
+    return "{0}s" -f $ts.Seconds
 }
 
 function Route-Command {
@@ -82,6 +113,26 @@ function Route-Command {
                 $rcloneStat = if (Test-Path "$WorkspacePath\rclone.exe") { "🟢 CONFIGURED" } else { "🔴 MISSING" }
                 Send-TelegramMessage "☁️ <b>WORKSPACE STATE</b>`n━━━━━━━━━━━━━━━━━━━━`nPath: <code>$WorkspacePath</code>`nLocal Size: $size`nRclone: $rcloneStat`n`n<i>Use /backup to sync to CloudVault.</i>"
             }
+            "/downloads" {
+                try {
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellActive`" }"
+                    $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
+                    if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
+                    $out = "📥 <b>ACTIVE DOWNLOADS</b>`n"
+                    foreach ($d in $res.result) {
+                        $pct = if ([double]$d.totalLength -gt 0) { [math]::Round(([double]$d.completedLength / [double]$d.totalLength) * 100, 1) } else { 0 }
+                        $spd = Format-Bytes ([double]$d.downloadSpeed)
+                        $out += "🔹 GID: <code>$($d.gid)</code> | $pct% | $spd/s`n"
+                    }
+                    Send-TelegramMessage $out
+                } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
+            }
+            "/status" {
+                $msgId = Send-TelegramMessage (Get-LiveDashboardText)
+                if ($msgId) {
+                    $global:DashboardMessageId = $msgId; $global:DashboardLastUpdate = Get-Date
+                }
+            }
         }
         return
     }
@@ -93,12 +144,25 @@ function Route-Command {
         if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date } }
         
         switch ($cmd) {
+            "/diagnostics" {
+                $sb = {
+                    param($WsPath, $JobStats)
+                    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
+                    $ram = [math]::Round(((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize - (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory) / (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize * 100, 1)
+                    $drvLet = if ($WsPath) { $WsPath.Substring(0,1) } else { "C" }
+                    $freeGb = [math]::Round((Get-PSDrive -Name $drvLet).Free / 1GB, 1)
+                    return "🚀 <b>DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB`n`n🟢 <b>ALL SYSTEMS HEALTHY</b>"
+                }
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, (Get-JobManagerStats))
+            }
             "/download" {
                 $sb = {
                     param($JobId, $Url, $RpcPort, $CancelDict, $ProgressDict)
                     $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
                     $safeUrl = $Url -replace '"', '\"'
-                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"]] }"
+                    
+                    # INJECTED LIMIT: Max 20MB/s so Azure doesn't download it instantly, giving us time to test /relay!
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"], {`"max-download-limit`": `"20M`"}] }"
                     $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                     $gid = $res.result
                     if (-not $gid) { throw "Failed to get GID from aria2." }
@@ -115,9 +179,11 @@ function Route-Command {
                         $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                         $info = $statusRes.result
                         $ProgressDict[$JobId] = $info
-                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed") {
+                        
+                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed" -or $info.status -eq "paused") {
                             $completed = $true
                             if ($info.status -eq "error") { throw "Aria2 Error: $($info.errorCode)" }
+                            if ($info.status -eq "paused") { throw "Paused automatically for Workspace Relay." }
                         }
                     }
                     return "✅ Download successfully completed!"
@@ -126,19 +192,23 @@ function Route-Command {
             }
             "/backup" {
                 $sb = {
-                    param($WsPath, $CloudName, $RootName)
-                    return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName
+                    param($WsPath, $CloudName, $RootName, $CorePath, $RpcPort)
+                    # CRITICAL FIX: Inject the missing functions into the background sandbox!
+                    . (Join-Path $CorePath "RelayManager.ps1")
+                    return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
                 }
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName)
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $PSScriptRoot, $Config.aria2.rpcPort)
             }
             "/relay" {
                 $sb = {
-                    param($WsPath, $CloudName, $RootName, $Repo, $Token)
-                    $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName
+                    param($WsPath, $CloudName, $RootName, $Repo, $Token, $CorePath, $RpcPort)
+                    # CRITICAL FIX: Inject the missing functions into the background sandbox!
+                    . (Join-Path $CorePath "RelayManager.ps1")
+                    $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
                     $relayRes = Invoke-RunnerRelay -Repo $Repo -Token $Token
                     return "$syncRes`n$relayRes`n`n⚠️ Shutting down current runner in 10 seconds to allow handoff."
                 }
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $env:GITHUB_REPO, $env:GH_TOKEN)
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $env:GITHUB_REPO, $env:GH_TOKEN, $PSScriptRoot, $Config.aria2.rpcPort)
             }
         }
     }
@@ -177,12 +247,39 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # Auto-Relay Timer Check
+    $keys = @($global:JobManager_ProgressDict.Keys)
+    foreach ($jId in $keys) {
+        if ($global:JobMessageMap.ContainsKey($jId)) {
+            $msgData = $global:JobMessageMap[$jId]
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds($Config.aria2.progressUpdateSeconds)) {
+                $info = $global:JobManager_ProgressDict[$jId]
+                if ($info) {
+                    $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+                    $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+                    $progBar = Get-ProgressBar -Percent $pct
+                    $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
+                    $spdStr = Format-Bytes -Bytes $speed
+                    $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+                    
+                    $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
+                    Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
+                    $msgData.LastUpdate = Get-Date
+                }
+            }
+        }
+    }
+
+    if ($global:DashboardMessageId -and ((Get-Date) -ge $global:DashboardLastUpdate.AddSeconds($Config.telegram.dashboardRefreshSeconds))) {
+        $global:DashboardLastUpdate = Get-Date
+        $dashText = Get-LiveDashboardText
+        Edit-TelegramMessage -MessageId $global:DashboardMessageId -Text $dashText
+    }
+
     if ((Get-Date) -ge $StartTime.AddMinutes($Config.relay.autoRelayMinutes)) {
         Write-BotLog "Auto-Relay time reached (340 mins). Triggering handoff." "WARN"
         Send-TelegramMessage "⚠️ <b>RUNNER TIME LIMIT APPROACHING (340 MINS)</b>`nTriggering automatic workspace relay..."
         Route-Command -Command "/relay"
-        $StartTime = (Get-Date).AddDays(1) # Prevent re-triggering while shutting down
+        $StartTime = (Get-Date).AddDays(1) 
     }
 }
 
