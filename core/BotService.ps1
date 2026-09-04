@@ -1,19 +1,13 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 2 - Debugging Enabled)
+    RDP Manager - BotService (Phase 2)
 .DESCRIPTION
-    Dedicated long-polling Telegram controller with physical file logging.
+    Dedicated long-polling Telegram controller.
 #>
 
-[CmdletBinding()]
-param (
-    [string]$WorkspacePath
-)
+$ErrorActionPreference = 'Continue'
 
-# STOP hiding errors so we can catch API rejections!
-$ErrorActionPreference = 'Continue' 
-
-# Setup physical logging
+$WorkspacePath = $env:WORKSPACE_ROOT
 $LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else { "C:\Users\Public\Desktop\bot_emergency.log" }
 
 function Write-BotLog {
@@ -21,6 +15,7 @@ function Write-BotLog {
     if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
     $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
     Add-Content -Path $LogFile -Value $logEntry
+    Write-Host $logEntry # Also output to GitHub Actions console
 }
 
 Write-BotLog "=== BOT SERVICE PROCESS STARTED ===" "INFO"
@@ -35,10 +30,10 @@ $BotToken = $env:TELEGRAM_BOT_TOKEN
 $AllowedChatId = $env:TELEGRAM_CHAT_ID
 $AdminUserId = $env:TELEGRAM_ADMIN_ID
 
-# Check for missing secrets
-if (-not $BotToken) { Write-BotLog "CRITICAL ERROR: TELEGRAM_BOT_TOKEN is empty!" "ERROR"; exit 1 }
-if (-not $AllowedChatId) { Write-BotLog "CRITICAL ERROR: TELEGRAM_CHAT_ID is empty!" "ERROR"; exit 1 }
-if (-not $AdminUserId) { Write-BotLog "CRITICAL ERROR: TELEGRAM_ADMIN_ID is empty!" "ERROR"; exit 1 }
+if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { 
+    Write-BotLog "CRITICAL ERROR: Missing Telegram credentials in environment!" "ERROR"
+    exit 1 
+}
 
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
 $Offset = 0
@@ -54,7 +49,7 @@ function Send-TelegramMessage {
     try {
         $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
         Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload | Out-Null
-        Write-BotLog "Successfully sent message to Telegram." "SUCCESS"
+        Write-BotLog "Sent message to Telegram successfully." "SUCCESS"
     } catch {
         Write-BotLog "TELEGRAM API ERROR: $($_.Exception.Message)" "ERROR"
     }
@@ -72,7 +67,6 @@ function Get-SystemStatus {
         
         return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk ($driveLetter:): $disk`%"
     } catch {
-        Write-BotLog "Status Generation Error: $($_.Exception.Message)" "ERROR"
         return "⚠️ Error generating system status."
     }
 }
@@ -129,8 +123,7 @@ while ($true) {
                 $msg = $update.message
                 if (-not $msg.text) { continue }
 
-                # Log incoming attempts for debugging
-                Write-BotLog "Message '$($msg.text)' received from User ID: $($msg.from.id) in Chat ID: $($msg.chat.id)" "INFO"
+                Write-BotLog "Received: '$($msg.text)' from User ID: $($msg.from.id)" "INFO"
 
                 # AUTHORIZATION CHECK
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) {
@@ -142,7 +135,7 @@ while ($true) {
             }
         }
     } catch {
-        Write-BotLog "Polling error: $($_.Exception.Message)" "WARN"
+        Write-BotLog "Polling error (Network hiccup). Retrying in 5s..." "WARN"
         Start-Sleep -Seconds $Config.telegram.retryBackoffSeconds
     }
 }
