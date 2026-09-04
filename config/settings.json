@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.4",
+  "schemaVersion": "1.5",
   "project": {
     "name": "RDP Manager Workspace",
     "theme": "cyberpunk"
@@ -25,14 +25,17 @@
     "split": 8,
     "progressUpdateSeconds": 8
   },
+  "relay": {
+    "autoRelayMinutes": 340,
+    "cloudDriveName": "CloudVault"
+  },
   "telegram": {
     "longPollingTimeoutSeconds": 30,
     "maxRetries": 5,
-    "retryBackoffSeconds": 5,
     "dashboardRefreshSeconds": 10,
     "commands": {
-      "lightweight": ["/ping", "/help", "/jobs", "/status", "/downloads", "/cancel"],
-      "jobs": ["/diagnostics", "/testjob", "/download"]
+      "lightweight": ["/ping", "/help", "/jobs", "/status", "/downloads", "/workspace"],
+      "jobs": ["/diagnostics", "/testjob", "/download", "/backup", "/relay"]
     }
   }
 }
