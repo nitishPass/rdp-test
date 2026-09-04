@@ -1,12 +1,29 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 2)
+    RDP Manager - BotService (Phase 2 - Debugging Enabled)
 .DESCRIPTION
-    Dedicated long-polling Telegram controller. Handles Authentication, 
-    Authorization, and Command Routing without exposing secrets.
+    Dedicated long-polling Telegram controller with physical file logging.
 #>
 
-$ErrorActionPreference = 'SilentlyContinue' # Prevent crashes from stopping the loop
+[CmdletBinding()]
+param (
+    [string]$WorkspacePath
+)
+
+# STOP hiding errors so we can catch API rejections!
+$ErrorActionPreference = 'Continue' 
+
+# Setup physical logging
+$LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else { "C:\Users\Public\Desktop\bot_emergency.log" }
+
+function Write-BotLog {
+    param ([string]$Message, [string]$Level = 'INFO')
+    if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
+    $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
+    Add-Content -Path $LogFile -Value $logEntry
+}
+
+Write-BotLog "=== BOT SERVICE PROCESS STARTED ===" "INFO"
 
 # -------------------------------------------------------------------------
 # 1. INITIALIZATION & SECURITY
@@ -18,53 +35,57 @@ $BotToken = $env:TELEGRAM_BOT_TOKEN
 $AllowedChatId = $env:TELEGRAM_CHAT_ID
 $AdminUserId = $env:TELEGRAM_ADMIN_ID
 
-function Write-BotLog {
-    param ([string]$Message, [string]$Level = 'INFO')
-    # Mask secrets in logs just in case
-    if ($BotToken) { $Message = $Message.Replace($BotToken, "[REDACTED_TOKEN]") }
-    $color = switch ($Level) { 'INFO'{'Cyan'} 'WARN'{'Yellow'} 'ERROR'{'Red'} 'SUCCESS'{'Green'} }
-    Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message" -ForegroundColor $color
-}
-
-if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) {
-    Write-BotLog "Missing required Telegram environment variables. Service halting." "ERROR"
-    exit 1
-}
+# Check for missing secrets
+if (-not $BotToken) { Write-BotLog "CRITICAL ERROR: TELEGRAM_BOT_TOKEN is empty!" "ERROR"; exit 1 }
+if (-not $AllowedChatId) { Write-BotLog "CRITICAL ERROR: TELEGRAM_CHAT_ID is empty!" "ERROR"; exit 1 }
+if (-not $AdminUserId) { Write-BotLog "CRITICAL ERROR: TELEGRAM_ADMIN_ID is empty!" "ERROR"; exit 1 }
 
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
 $Offset = 0
 $JobCounter = 1
 
-Write-BotLog "BotService initialized. Single-controller lock assumed." "SUCCESS"
-Write-BotLog "Telegram Token: CONFIGURED" "INFO"
+Write-BotLog "Secrets verified. Allowed Chat: $AllowedChatId | Admin: $AdminUserId" "SUCCESS"
 
 # -------------------------------------------------------------------------
 # 2. HELPER FUNCTIONS
 # -------------------------------------------------------------------------
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML")
-    $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
-    Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload | Out-Null
+    try {
+        $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
+        Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload | Out-Null
+        Write-BotLog "Successfully sent message to Telegram." "SUCCESS"
+    } catch {
+        Write-BotLog "TELEGRAM API ERROR: $($_.Exception.Message)" "ERROR"
+    }
 }
 
 function Get-SystemStatus {
-    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-    $os = Get-CimInstance Win32_OperatingSystem
-    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
-    $drive = Get-PSDrive -Name ($env:WORKSPACE_ROOT.Substring(0,1))
-    $disk = [math]::Round((($drive.Used) / ($drive.Used + $drive.Free)) * 100, 1)
-    return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk: $disk`%"
+    try {
+        $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
+        $os = Get-CimInstance Win32_OperatingSystem
+        $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
+        
+        $driveLetter = if ($WorkspacePath) { $WorkspacePath.Substring(0,1) } else { "C" }
+        $drive = Get-PSDrive -Name $driveLetter
+        $disk = [math]::Round((($drive.Used) / ($drive.Used + $drive.Free)) * 100, 1)
+        
+        return "🖥️ <b>SYSTEM STATUS</b>%0ACPU: $cpu`%%0ARAM: $ram`%%0AWorkspace Disk ($driveLetter:): $disk`%"
+    } catch {
+        Write-BotLog "Status Generation Error: $($_.Exception.Message)" "ERROR"
+        return "⚠️ Error generating system status."
+    }
 }
 
 # -------------------------------------------------------------------------
-# 3. COMMAND ROUTER & JOB INTERFACE
+# 3. COMMAND ROUTER
 # -------------------------------------------------------------------------
 function Route-Command {
     param ([string]$Command)
     
     $cmd = $Command.ToLower().Trim()
+    Write-BotLog "Routing command: $cmd" "INFO"
     
-    # Lightweight Commands (Immediate Response)
     if ($Config.telegram.commands.lightweight -contains $cmd) {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
@@ -73,16 +94,13 @@ function Route-Command {
         return
     }
 
-    # Job Commands (Queued Interface)
     if ($Config.telegram.commands.jobs -contains $cmd) {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         
-        # 1. Acknowledge Receipt
         Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
-        
-        # 2. Process Job (Synchronous for Phase 2, Async in Phase 3)
         Write-BotLog "Processing $jobId ($cmd)..." "INFO"
+        
         switch ($cmd) {
             "/status" { 
                 $result = Get-SystemStatus 
@@ -98,8 +116,8 @@ function Route-Command {
 # -------------------------------------------------------------------------
 # 4. LONG POLLING ENGINE
 # -------------------------------------------------------------------------
+Write-BotLog "Attempting to send startup message..." "INFO"
 Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands."
-Write-BotLog "Entering long-polling loop..." "INFO"
 
 while ($true) {
     try {
@@ -108,17 +126,18 @@ while ($true) {
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
                 $Offset = $update.update_id + 1
-                
                 $msg = $update.message
                 if (-not $msg.text) { continue }
 
+                # Log incoming attempts for debugging
+                Write-BotLog "Message '$($msg.text)' received from User ID: $($msg.from.id) in Chat ID: $($msg.chat.id)" "INFO"
+
                 # AUTHORIZATION CHECK
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) {
-                    Write-BotLog "Unauthorized access attempt from User: $($msg.from.id) in Chat: $($msg.chat.id)" "WARN"
+                    Write-BotLog "ACCESS DENIED. Expected Chat: $AllowedChatId | Expected User: $AdminUserId" "WARN"
                     continue 
                 }
 
-                Write-BotLog "Command received: $($msg.text)" "INFO"
                 Route-Command -Command $msg.text
             }
         }
