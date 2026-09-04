@@ -1,66 +1,22 @@
-name: RDP
-
-on:
-  workflow_dispatch:
-    inputs:
-      cycles:
-        description: "Infinity Relay: How many 6-hour cycles to run automatically (0 = just this run, 3 = ~18 hours total)"
-        required: false
-        default: "0"
+name: RDP Workspace (Phase 1)
+on: [workflow_dispatch]
 
 jobs:
-  secure-rdp:
+  workspace:
     runs-on: windows-latest
     timeout-minutes: 360
-
     steps:
-      # ============================================================
-      # 00 | CHECKOUT REPOSITORY
-      # ============================================================
-      - name: "00 | Checkout Repository (For MASTER_CONTROL.bat)"
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 01 | RUNNER INFORMATION
-      # ============================================================
-      - name: "01 | Runner Information"
-        shell: pwsh
-        run: |
-          Write-Host "============================================================"
-          Write-Host "RUNNER INFORMATION"
-          Write-Host "============================================================"
-          Write-Host "Computer Name : $env:COMPUTERNAME"
-          Write-Host "OS            : $((Get-CimInstance Win32_OperatingSystem).Caption)"
-          Write-Host "CPU           : $((Get-CimInstance Win32_Processor | Select-Object -First 1).Name)"
-          
-          $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
-          Write-Host "RAM           : $ramGB GB"
-          Write-Host "============================================================"
-
-      # ============================================================
-      # 02 | CONFIGURE RDP & USER
-      # ============================================================
-      - name: "02 | Configure RDP & User"
+      - name: Bootstrap Workspace
         shell: pwsh
         env:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
-          Get-NetFirewallRule -DisplayGroup "Remote Desktop" | Enable-NetFirewallRule
-          Restart-Service -Name TermService -Force
+        run: ./core/Bootstrap.ps1
 
-          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-          New-LocalUser -Name $env:RDP_USERNAME -Password $securePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
-          Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
-          Write-Host "[ OK ] RDP User Created and Firewall Configured."
-
-      # ============================================================
-      # 03 | INSTALL & CONNECT TAILSCALE
-      # ============================================================
-      - name: "03 | Connect Tailscale"
+      - name: Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -68,185 +24,12 @@ jobs:
           $installer = "$env:TEMP\ts.msi"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
           Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
-          
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-          & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="$hostname"
-          
-          Start-Sleep -Seconds 3
-          $tailscaleIP = & $ts ip -4 | Select-Object -First 1
-          "TAILSCALE_IP=$tailscaleIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "[ OK ] Tailscale Connected: $tailscaleIP"
+          & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="rdp-workspace-test"
+          Write-Host "Tailscale connected: $(& $ts ip -4)"
 
-      # ============================================================
-      # 04 | RUSTDESK FALLBACK & TELEGRAM EXFILTRATION
-      # ============================================================
-      - name: "04 | RustDesk + Telegram Fallback"
-        shell: pwsh
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          Write-Host "[ INFO ] Installing RustDesk..."
-          $rdUrl = "https://github.com/rustdesk/rustdesk/releases/download/1.3.1/rustdesk-1.3.1-x86_64.msi"
-          $rdMsi = "$env:TEMP\rustdesk.msi"
-          Invoke-WebRequest -Uri $rdUrl -OutFile $rdMsi
-          Start-Process msiexec.exe -ArgumentList "/i","`"$rdMsi`"","/quiet","/norestart" -Wait
-          
-          Write-Host "[ INFO ] Opening RustDesk Ports..."
-          for ($p=21115; $p -le 21119; $p++) { netsh advfirewall firewall add rule name="RD-TCP-$p" dir=in action=allow protocol=TCP localport=$p | Out-Null }
-          netsh advfirewall firewall add rule name="RD-UDP-21116" dir=in action=allow protocol=UDP localport=21116 | Out-Null
-
-          Write-Host "[ INFO ] Launching RustDesk and capturing screenshot..."
-          $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          Start-Process -FilePath $rdExe
-          Start-Sleep -Seconds 7 
-          
-          $screenshotPath = "$env:TEMP\rustdesk.png"
-          Add-Type -AssemblyName System.Windows.Forms
-          Add-Type -AssemblyName System.Drawing
-          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-          $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-          $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-          $graphics.Dispose(); $bitmap.Dispose()
-
-          Write-Host "[ INFO ] Sending screenshot to Telegram..."
-          $caption = "🚨 <b>RustDesk Fallback Active</b>%0AYour emergency ID and Password are in this screenshot."
-          curl.exe -s -F "chat_id=$env:TELEGRAM_CHAT_ID" -F "photo=@$screenshotPath" -F "caption=$caption" -F "parse_mode=HTML" "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendPhoto" | Out-Null
-          Write-Host "[ OK ] Fallback credentials sent securely to Telegram."
-
-      # ============================================================
-      # 05 | MINIMAL CUSTOMIZATION (BAT INJECTION)
-      # ============================================================
-      - name: "05 | Minimal Customization"
-        shell: pwsh
-        env:
-          TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
-          TAILSCALE_TAILNET: ${{ secrets.TAILSCALE_TAILNET }}
-        run: |
-          # Disable annoying server popups
-          reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
-          reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
-          
-          # Setup Sync Dir & Inject System Secrets for BAT
-          New-Item -ItemType Directory -Force -Path "D:\GoogleDriveSync" | Out-Null
-          [Environment]::SetEnvironmentVariable("TAILSCALE_API_KEY", "$env:TAILSCALE_API_KEY", "Machine")
-          [Environment]::SetEnvironmentVariable("TAILSCALE_TAILNET", "$env:TAILSCALE_TAILNET", "Machine")
-
-          # Copy MASTER_CONTROL.bat
-          $publicDesktop = "C:\Users\Public\Desktop"
-          if (Test-Path "$env:GITHUB_WORKSPACE\MASTER_CONTROL.bat") {
-            Copy-Item "$env:GITHUB_WORKSPACE\MASTER_CONTROL.bat" "$publicDesktop\⚙️ MASTER CONTROL.bat" -Force
-          } else {
-            Write-Host "[ WARNING ] MASTER_CONTROL.bat not found in repository root!"
-          }
-          Write-Host "[ OK ] System prepped for Control Panel."
-
-      # ============================================================
-      # 06 | TELEGRAM NOTIFICATION (RAPID BOOT COMPLETE)
-      # ============================================================
-      - name: "06 | Telegram Notification"
-        shell: pwsh
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-        run: |
-          $htmlMessage = @"
-          🚀 <b>[ RDP FAST-BOOT COMPLETE ]</b>
-
-          ✅ <b>IP:</b> <code>$env:TAILSCALE_IP</code>
-          ✅ <b>User:</b> <code>$env:RDP_USERNAME</code>
-          
-          <b>⚙️ SERVER READY:</b>
-          • <code>⚙️ MASTER CONTROL.bat</code> is on your desktop.
-          • Open it to install IDM, wipe bloatware, or auto-destruct!
-          "@
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $htmlMessage; parse_mode = "HTML" } | Out-Null
-
-      # ============================================================
-      # 07 | LIVE MONITOR & INFINITY RELAY TIMER
-      # ============================================================
-      - name: "07 | Live Monitor & Relay Timer"
-        shell: pwsh
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          $updateId = 0
-          $stopRequested = $false
-          $startTime = Get-Date
-          $maxRuntimeMins = 355 # Trigger relay 5 mins before 6-hour death
-
-          Write-Host "[ INFO ] Live Bot Listener Active. Max session time: 355 minutes."
-          
-          while (-not $stopRequested) {
-            $now = Get-Date
-            $uptimeMins = ($now - $startTime).TotalMinutes
-            
-            # INFINITY RELAY TRIGGER CHECK
-            if ($uptimeMins -ge $maxRuntimeMins) {
-              Write-Host "[ ! ] Reached 355 minutes. Triggering relay handoff..."
-              break 
-            }
-
-            if (Test-Path "C:\Users\Public\stop_runner.txt") {
-              Write-Host "[ ! ] Self-Destruct triggered from MASTER_CONTROL.bat!"
-              Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = "🛑 <b>Self-Destruct activated.</b> Shutting down..." ; parse_mode = "HTML" } -ErrorAction SilentlyContinue
-              $stopRequested = $true
-              break
-            }
-
-            $tgUrl = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/getUpdates?offset=$updateId&timeout=0"
-            $updates = Invoke-RestMethod -Uri $tgUrl -Method Get -ErrorAction SilentlyContinue
-            if ($null -ne $updates -and $updates.ok) {
-              foreach ($msg in $updates.result) {
-                $updateId = $msg.update_id + 1
-                if ([string]$msg.message.chat.id -eq $env:TELEGRAM_CHAT_ID) {
-                  if ($msg.message.text -match "^/stop") { $stopRequested = $true; break }
-                  elseif ($msg.message.text -match "^/status") {
-                    $os = Get-CimInstance Win32_OperatingSystem
-                    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-                    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
-                    $msgText = "📊 <b>[ STATUS ]</b>%0A⏱️ Uptime: $([math]::Round($uptimeMins, 1)) mins%0A⚙️ CPU: $cpu % | RAM: $ram %"
-                    curl.exe -s "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage?chat_id=$env:TELEGRAM_CHAT_ID&text=$msgText&parse_mode=HTML" | Out-Null
-                  }
-                }
-              }
-            }
-            Start-Sleep -Seconds 5
-          }
-
-      # ============================================================
-      # 08 | INFINITY RELAY DISPATCH
-      # ============================================================
-      - name: "08 | Infinity Relay Dispatch"
-        if: always()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          $cycles = [int]"${{ inputs.cycles }}"
-          if ($cycles -gt 0) {
-            $next = $cycles - 1
-            Write-Host "[ INFO ] Dispatching next cycle ($next cycles remaining)..."
-            $url = "https://api.github.com/repos/${{ github.repository }}/actions/workflows/rdp.yml/dispatches"
-            $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
-            $body = @{ ref="${{ github.ref_name }}"; inputs=@{ cycles="$next" } } | ConvertTo-Json
-            $res = Invoke-WebRequest -Method POST -Uri $url -Headers $hdr -Body $body -ErrorAction SilentlyContinue
-            if ($res.StatusCode -eq 204) { Write-Host "[ OK ] Next workflow started successfully!" }
-          } else {
-            Write-Host "[ INFO ] No cycles remaining. Session ending permanently."
-          }
-
-      # ============================================================
-      # 09 | CLEANUP
-      # ============================================================
-      - name: "09 | Cleanup Tailscale"
-        if: always()
+      - name: Keep-Alive (Testing Mode)
         shell: pwsh
         run: |
-          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          if (Test-Path $ts) { & $ts logout }
+          Write-Host "Workspace ready. Keeping runner alive for 30 minutes for manual verification..."
+          Start-Sleep -Seconds 1800
