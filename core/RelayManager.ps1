@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.1)
+    RDP Manager - RelayManager (Phase 6.2)
 .DESCRIPTION
     Handles rclone cloud synchronization and GitHub API runner handoffs.
 #>
@@ -8,12 +8,18 @@
 function Sync-CloudWorkspace {
     param([string]$WsPath, [string]$CloudName, [string]$RootName, [string]$RpcPort = "6800")
     
-    # 1. Safely pause aria2 to flush partial .aria2 files to disk!
+    # 1. Force pause and explicitly save the aria2 session to disk
     try {
         $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
-        $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.pauseAll`" }"
-        Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
-        Start-Sleep -Seconds 2
+        
+        $body1 = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.forcePauseAll`" }"
+        Invoke-RestMethod -Uri $rpc -Method Post -Body $body1 -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+        
+        $body2 = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.saveSession`" }"
+        Invoke-RestMethod -Uri $rpc -Method Post -Body $body2 -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+        
+        # Give Windows a few seconds to completely flush the I/O buffers to the D: drive
+        Start-Sleep -Seconds 4
     } catch { }
 
     $rclone = Join-Path $WsPath "rclone.exe"
@@ -22,8 +28,9 @@ function Sync-CloudWorkspace {
     $cloudTarget = "${CloudName}:${RootName}"
     $confPath = "$env:APPDATA\rclone\rclone.conf"
     
-    # 2. Push Local -> Cloud.
-    $proc = Start-Process -FilePath $rclone -ArgumentList "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --transfers 8" -Wait -PassThru -NoNewWindow
+    # 2. Push Local -> Cloud (Added --local-no-check-updated to ignore cache flushes)
+    $args = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --transfers 4 --retries 3 --local-no-check-updated"
+    $proc = Start-Process -FilePath $rclone -ArgumentList $args -Wait -PassThru -NoNewWindow
     
     if ($proc.ExitCode -ne 0) { throw "Rclone sync failed with exit code $($proc.ExitCode)" }
     return "✅ Workspace successfully synchronized to Cloud Vault."
@@ -44,7 +51,6 @@ function Invoke-RunnerRelay {
     $url = "https://api.github.com/repos/$Repo/actions/workflows/rdp.yml/dispatches"
     
     try {
-        # CRITICAL: -ContentType application/json is required by GitHub
         Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -ContentType "application/json"
         return "🚀 Relay Signal Sent! Next runner is booting."
     } catch {
