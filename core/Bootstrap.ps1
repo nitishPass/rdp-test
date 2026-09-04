@@ -97,3 +97,11 @@ try {
     Write-Log $_.Exception.Message "ERROR"
     exit 1
 }
+
+    # 8. Start Telegram BotService (Phase 2)
+    Write-Log "Launching Telegram BotService in background..." "INFO"
+    $BotServicePath = Join-Path $PSScriptRoot "BotService.ps1"
+    
+    # Run in an independent PowerShell process. It automatically inherits the current environment variables.
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$BotServicePath`"" -WindowStyle Hidden
+    Write-Log "BotService launched successfully." "SUCCESS"
