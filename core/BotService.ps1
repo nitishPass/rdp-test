@@ -61,7 +61,7 @@ function Edit-TelegramMessage {
         $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
         Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $payload | Out-Null
     } catch {
-        # Ignore 400 errors (usually means "message is not modified", which is safe to ignore on a live dashboard)
+        # Ignore 400 errors (usually means "message is not modified")
     }
 }
 
@@ -109,7 +109,6 @@ function Route-Command {
             "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
             "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/status - Live Dashboard`n/diagnostics - Full Health Report`n/jobs - Active Jobs`n/ping - Connection test" }
             "/status" {
-                # Setup Live Dashboard
                 $text = Get-LiveDashboardText
                 $msgId = Send-TelegramMessage $text
                 if ($msgId) {
@@ -133,7 +132,8 @@ function Route-Command {
             "/testjob" {
                 $seconds = if ($args -match '^\d+$') { [int]$args } else { 15 }
                 $sb = { param($Secs); Start-Sleep -Seconds $Secs; return "⏳ Test completed ($Secs s)" }
-                Submit-Job -JobId $jobId -CommandName "$cmd $seconds" -ScriptBlock $sb -Arguments @{ Secs = $seconds }
+                # FIXED: Passed as strict ordered Array
+                Submit-Job -JobId $jobId -CommandName "$cmd $seconds" -ScriptBlock $sb -ArgumentList @($seconds)
             }
             "/diagnostics" {
                 $sb = {
@@ -166,13 +166,10 @@ function Route-Command {
                     $tsSvc = (Get-Service Tailscale -ErrorAction SilentlyContinue).Status
                     $tsStatus = if ($tsSvc -eq 'Running') { "🟢 CONNECTED" } else { "🔴 OFFLINE" }
 
-                    # FORMATTING THE REPORT (Cyberpunk Aesthetic)
+                    # FORMATTING THE REPORT
                     $report = "🚀 <b>RDP MANAGER DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n"
                     $report += "🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n"
-                    
-                    # FIXED: Added braces around drive variable to prevent ParserError
                     $report += "`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB $statusStorage`nPath: <code>$WsPath</code>`n"
-                    
                     $report += "`n🌐 <b>NETWORK & API</b>`nInternet/DNS: $netStatus`n"
                     $report += "`n🔗 <b>TAILSCALE</b>`nStatus: $tsStatus`n"
                     $report += "`n🖥️ <b>RDP SERVICE</b>`nTermService: $rdpStatus`n"
@@ -188,9 +185,9 @@ function Route-Command {
                     return $report
                 }
                 
-                # Fetch current job stats to pass to the isolated runspace
                 $stats = Get-JobManagerStats
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -Arguments @{ WsPath = $WorkspacePath; JobStats = $stats }
+                # FIXED: Passed explicitly ordered variables to avoid Hashtable positional shuffle
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $stats)
             }
         }
         return
@@ -206,7 +203,6 @@ Write-BotLog "Attempting to send startup message..." "INFO"
 Send-TelegramMessage "🚀 <b>BotService Started</b>`nLive Dashboard & Diagnostics online."
 
 while ($true) {
-    # 1. Poll Telegram Updates
     try {
         $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=$($Config.telegram.longPollingTimeoutSeconds)" -Method Get -TimeoutSec ($Config.telegram.longPollingTimeoutSeconds + 5)
         if ($updates.ok -and $updates.result.Count -gt 0) {
@@ -221,7 +217,6 @@ while ($true) {
         }
     } catch { }
 
-    # 2. Process Async Job Events
     $jobEvents = Invoke-JobManagerTick
     foreach ($event in $jobEvents) {
         if ($event.Event -eq 'COMPLETED') {
@@ -233,7 +228,6 @@ while ($true) {
         }
     }
 
-    # 3. Live Dashboard Updater (Tick every 10 seconds)
     if ($global:DashboardMessageId -and ((Get-Date) -ge $global:DashboardLastUpdate.AddSeconds($Config.telegram.dashboardRefreshSeconds))) {
         $global:DashboardLastUpdate = Get-Date
         $dashText = Get-LiveDashboardText
