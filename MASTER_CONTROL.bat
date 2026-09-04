@@ -9,19 +9,21 @@ echo               RDP MASTER CONTROL PANEL
 echo ============================================================
 echo.
 echo   [1] 🧹 RUN HEAVY STORAGE CLEANUP (Frees ~80GB)
-echo   [2] 🔄 BACKUP TO GOOGLE DRIVE (D:\GoogleDriveSync)
-echo   [3] 🗑️ PURGE DEVICE FROM TAILSCALE
-echo   [4] 🛑 INITIATE SELF-DESTRUCT (Stops GitHub Action)
-echo   [5] ❌ EXIT
+echo   [2] 📦 INSTALL SOFTWARE (IDM, WizTree, Rclone)
+echo   [3] 🔄 BACKUP TO GOOGLE DRIVE (D:\GoogleDriveSync)
+echo   [4] 🗑️ PURGE DEVICE FROM TAILSCALE
+echo   [5] 🛑 INITIATE SELF-DESTRUCT (Stops GitHub Action)
+echo   [6] ❌ EXIT
 echo.
 echo ============================================================
-set /p choice="Select an option (1-5): "
+set /p choice="Select an option (1-6): "
 
 if "%choice%"=="1" goto CLEANUP
-if "%choice%"=="2" goto BACKUP
-if "%choice%"=="3" goto PURGE
-if "%choice%"=="4" goto DESTRUCT
-if "%choice%"=="5" goto EXIT
+if "%choice%"=="2" goto INSTALL_TOOLS
+if "%choice%"=="3" goto BACKUP
+if "%choice%"=="4" goto PURGE
+if "%choice%"=="5" goto DESTRUCT
+if "%choice%"=="6" goto EXIT
 goto MENU
 
 :CLEANUP
@@ -34,7 +36,22 @@ echo ============================================================
 echo.
 powershell -Command "$paths = @('C:\Android', 'C:\hostedtoolcache\windows', 'C:\ghcup', 'C:\rtools45', 'C:\Julia', 'C:\Strawberry', 'C:\mingw64', 'C:\mingw32', 'C:\Miniconda', 'C:\msys64', 'C:\actionarchivecache', 'C:\npm', 'C:\vcpkg', 'C:\SeleniumWebDrivers', 'C:\selenium', 'C:\Program Files\Microsoft Visual Studio', 'C:\Program Files\dotnet', 'C:\Program Files\MongoDB', 'C:\Program Files\MySQL', 'C:\Program Files\Microsoft SQL Server', 'C:\ProgramData\Package Cache'); foreach ($p in $paths) { if (Test-Path $p) { Write-Host 'Deleting: ' $p; cmd.exe /c `"rmdir /s /q `"$p`"`" } }"
 echo.
-echo [ OK ] Cleanup Complete! Check WizTree for new free space.
+echo [ OK ] Cleanup Complete! 
+pause
+goto MENU
+
+:INSTALL_TOOLS
+cls
+color 0D
+echo ============================================================
+echo   INSTALLING TOOLKIT...
+echo ============================================================
+echo.
+echo Installing Internet Download Manager (IDM), WizTree, and Rclone...
+choco install internetdownloadmanager wiztree rclone -y
+echo.
+echo [ OK ] Software Installation Complete!
+echo (Note: IDM usually requires you to open it once from the Start Menu to integrate with browsers).
 pause
 goto MENU
 
