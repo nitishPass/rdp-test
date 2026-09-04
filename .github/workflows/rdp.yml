@@ -1,5 +1,11 @@
-name: RDP Workspace (Phase 2)
-on: [workflow_dispatch]
+name: RDP Workspace (Phase 6)
+on: 
+  workflow_dispatch:
+    inputs:
+      is_relay:
+        description: 'Is this a relay from a previous runner?'
+        required: false
+        default: 'false'
 
 jobs:
   workspace:
@@ -9,11 +15,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap Workspace
+      - name: Bootstrap Workspace & Restore Cloud State
         shell: pwsh
         env:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
+          IS_RELAY: ${{ github.event.inputs.is_relay }}
         run: ./core/Bootstrap.ps1
 
       - name: Connect Tailscale
@@ -25,13 +33,15 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $installer
           Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="rdp-workspace-test"
+          & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="rdp-workspace-cloud"
           Write-Host "Tailscale connected: $(& $ts ip -4)"
 
-      - name: BotService Keep-Alive
+      - name: BotService Keep-Alive & Relay Engine
         shell: pwsh
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
         run: ./core/BotService.ps1
