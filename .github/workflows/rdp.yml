@@ -9,14 +9,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap Workspace & BotService
+      - name: Bootstrap Workspace
         shell: pwsh
         env:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
         run: ./core/Bootstrap.ps1
 
       - name: Connect Tailscale
@@ -31,8 +28,10 @@ jobs:
           & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="rdp-workspace-test"
           Write-Host "Tailscale connected: $(& $ts ip -4)"
 
-      - name: Session Keep-Alive
+      - name: BotService Keep-Alive
         shell: pwsh
-        run: |
-          Write-Host "Workspace and BotService active. Waiting for Telegram commands..."
-          Start-Sleep -Seconds 1800
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+        run: ./core/BotService.ps1
