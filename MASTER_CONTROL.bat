@@ -1,6 +1,18 @@
 @echo off
+:: Enable UTF-8 so emojis render correctly
+chcp 65001 >nul
 title RDP MASTER CONTROL PANEL
 color 0B
+
+:: Auto-Request Administrator Privileges
+NET SESSION >nul 2>&1
+if %errorLevel% == 0 (
+    goto :MENU
+) else (
+    echo [!] Requesting Administrator privileges to run commands...
+    powershell -Command "Start-Process '%~dpnx0' -Verb RunAs"
+    exit
+)
 
 :MENU
 cls
@@ -48,10 +60,13 @@ echo   INSTALLING TOOLKIT...
 echo ============================================================
 echo.
 echo Installing Internet Download Manager (IDM), WizTree, and Rclone...
-choco install internetdownloadmanager wiztree rclone -y
+choco install idm wiztree rclone -y
+echo.
+echo Creating Desktop Shortcuts...
+powershell -Command "$WshShell = New-Object -ComObject WScript.Shell; $wizPath = (Get-ChildItem -Path 'C:\Program Files*' -Filter 'WizTree*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName; if ($wizPath) { $s = $WshShell.CreateShortcut('C:\Users\Public\Desktop\WizTree.lnk'); $s.TargetPath = $wizPath; $s.Save() }; $idmPath = (Get-ChildItem -Path 'C:\Program Files*' -Filter 'IDMan.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName; if ($idmPath) { $s = $WshShell.CreateShortcut('C:\Users\Public\Desktop\Internet Download Manager.lnk'); $s.TargetPath = $idmPath; $s.Save() }"
 echo.
 echo [ OK ] Software Installation Complete!
-echo (Note: IDM usually requires you to open it once from the Start Menu to integrate with browsers).
+echo (Note: Open IDM from the desktop to integrate it with your browser).
 pause
 goto MENU
 
