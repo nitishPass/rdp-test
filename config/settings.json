@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "project": {
     "name": "RDP Manager Workspace",
     "theme": "cyberpunk"
@@ -15,13 +15,17 @@
     "serviceName": "TermService",
     "firewallGroupName": "Remote Desktop"
   },
+  "jobManager": {
+    "maxWorkers": 2,
+    "stateFileName": "jobs.json"
+  },
   "telegram": {
     "longPollingTimeoutSeconds": 30,
     "maxRetries": 5,
     "retryBackoffSeconds": 5,
     "commands": {
-      "lightweight": ["/ping", "/help"],
-      "jobs": ["/status"]
+      "lightweight": ["/ping", "/help", "/jobs"],
+      "jobs": ["/status", "/testjob"]
     }
   }
 }
