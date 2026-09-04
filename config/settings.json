@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0",
+  "project": {
+    "name": "RDP Manager Workspace",
+    "theme": "cyberpunk"
+  },
+  "storage": {
+    "workspaceRootName": "RDPWorkspace",
+    "stateFolderName": "State",
+    "downloadsFolderName": "Downloads",
+    "minFreeSpaceGB": 10
+  },
+  "rdp": {
+    "port": 3389,
+    "serviceName": "TermService",
+    "firewallGroupName": "Remote Desktop"
+  },
+  "software": [
+    {
+      "id": "idm",
+      "name": "Internet Download Manager",
+      "package": "internet-download-manager",
+      "manager": "chocolatey",
+      "role": "interactive"
+    },
+    {
+      "id": "aria2",
+      "name": "Aria2c Download Engine",
+      "package": "aria2",
+      "manager": "chocolatey",
+      "role": "bot"
+    }
+  ],
+  "features": {
+    "enableTelegramBot": false,
+    "enableAutoBackup": false
+  }
+}
