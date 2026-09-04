@@ -28,10 +28,11 @@ function Sync-JobState {
 }
 
 function Submit-Job {
-    param([string]$JobId, [string]$CommandName, [scriptblock]$ScriptBlock, [hashtable]$Arguments = @{})
+    # FIXED: Using a strict Array to prevent positional shuffling
+    param([string]$JobId, [string]$CommandName, [scriptblock]$ScriptBlock, [array]$ArgumentList = @())
     
     $ps = [powershell]::Create().AddScript($ScriptBlock)
-    foreach ($key in $Arguments.Keys) { $null = $ps.AddArgument($Arguments[$key]) }
+    foreach ($arg in $ArgumentList) { $null = $ps.AddArgument($arg) }
     $ps.RunspacePool = $global:JobManager_Pool
     
     $async = $ps.BeginInvoke()
