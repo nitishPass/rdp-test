@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 4)
+    RDP Manager - BotService (Phase 5)
 .DESCRIPTION
-    Control Plane for Telegram. Features Live Dashboard and Async Diagnostics.
+    Control Plane for Telegram. Features aria2 Integration, Live Dashboard, and Progress Tracking.
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -15,11 +15,10 @@ function Write-BotLog {
     param ([string]$Message, [string]$Level = 'INFO')
     if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
     $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
-    Add-Content -Path $LogFile -Value $logEntry
-    Write-Host $logEntry
+    Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 4) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 5) STARTED ===" "INFO"
 
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -28,17 +27,15 @@ $BotToken = $env:TELEGRAM_BOT_TOKEN
 $AllowedChatId = $env:TELEGRAM_CHAT_ID
 $AdminUserId = $env:TELEGRAM_ADMIN_ID
 
-if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { 
-    Write-BotLog "CRITICAL ERROR: Missing Telegram credentials!" "ERROR"; exit 1 
-}
+if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { Write-BotLog "CRITICAL ERROR: Missing credentials!" "ERROR"; exit 1 }
 
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
 $Offset = 0
 $JobCounter = 1
 
-# Dashboard State Variables
 $global:DashboardMessageId = $null
 $global:DashboardLastUpdate = [DateTime]::MinValue
+$global:JobMessageMap = @{} # Tracks active Job messages for progress editing
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 Initialize-JobManager
@@ -60,9 +57,7 @@ function Edit-TelegramMessage {
     try {
         $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
         Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $payload | Out-Null
-    } catch {
-        # Ignore 400 errors (usually means "message is not modified")
-    }
+    } catch { }
 }
 
 function Get-LiveDashboardText {
@@ -76,18 +71,30 @@ function Get-LiveDashboardText {
     $upStr = "{0:00}:{1:00}:{2:00}" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
     $jStats = Get-JobManagerStats
 
-    $out = "┌─────────────────────────────┐`n"
-    $out += "│ 🖥️ <b>RDP MANAGER DASHBOARD</b>`n"
-    $out += "│ ───────────────────────────`n"
-    $out += "│ 🟢 SYSTEM ONLINE`n│`n"
-    $out += "│ CPU  $cpu%`n"
-    $out += "│ RAM  $ram%`n"
-    $out += "│ DISK $disk% (${drvLet}:)`n│`n"
-    $out += "│ Jobs: $($jStats.Running) RUNNING`n"
-    $out += "│ Uptime: $upStr`n"
-    $out += "│ Updated: $((Get-Date).ToString('HH:mm:ss'))`n"
-    $out += "└─────────────────────────────┘"
+    $out = "┌─────────────────────────────┐`n│ 🖥️ <b>RDP MANAGER DASHBOARD</b>`n│ ───────────────────────────`n│ 🟢 SYSTEM ONLINE`n│`n"
+    $out += "│ CPU  $cpu%`n│ RAM  $ram%`n│ DISK $disk% (${drvLet}:)`n│`n"
+    $out += "│ Jobs: $($jStats.Running) RUNNING`n│ Uptime: $upStr`n│ Updated: $((Get-Date).ToString('HH:mm:ss'))`n└─────────────────────────────┘"
     return $out
+}
+
+function Get-ProgressBar([double]$Percent) {
+    $filled = [math]::Floor($Percent / 10); $empty = 10 - $filled
+    return ("█" * $filled) + ("░" * $empty)
+}
+
+function Format-Bytes([double]$Bytes) {
+    if ($Bytes -gt 1GB) { return "$([math]::Round($Bytes/1GB, 2)) GB" }
+    if ($Bytes -gt 1MB) { return "$([math]::Round($Bytes/1MB, 2)) MB" }
+    return "$([math]::Round($Bytes/1KB, 2)) KB"
+}
+
+function Format-ETA([double]$Speed, [double]$Remaining) {
+    if ($Speed -le 0) { return "∞" }
+    $secs = [math]::Round($Remaining / $Speed)
+    $ts = [timespan]::fromseconds($secs)
+    if ($ts.Hours -gt 0) { return "{0}h {1}m" -f $ts.Hours, $ts.Minutes }
+    if ($ts.Minutes -gt 0) { return "{0}m {1}s" -f $ts.Minutes, $ts.Seconds }
+    return "{0}s" -f $ts.Seconds
 }
 
 # -------------------------------------------------------------------------
@@ -99,21 +106,40 @@ function Route-Command {
     $parts = ($CommandText.ToLower().Trim() -replace '@.*', '') -split '\s+', 2
     $cmd = $parts[0]
     $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+    $rawUrl = if ($parts.Count -gt 1) { ($CommandText.Trim() -replace '@.*', '') -split '\s+', 2 | Select-Object -Last 1 } else { "" }
     
     Write-BotLog "Routing command: $cmd" "INFO"
     
-    # --- LIGHTWEIGHT COMMANDS ---
     if ($Config.telegram.commands.lightweight -contains $cmd) {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
             "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/status - Live Dashboard`n/diagnostics - Full Health Report`n/jobs - Active Jobs`n/ping - Connection test" }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View aria2 queue`n/cancel JOB-ID - Stop a job`n/status - Live Dashboard`n/diagnostics - Health Report" }
+            "/cancel" {
+                $target = $args.ToUpper().Trim()
+                if ($global:JobManager_Jobs.ContainsKey($target)) {
+                    $global:JobManager_CancelDict[$target] = $true
+                    Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
+                } else { Send-TelegramMessage "⚠️ Job not found or already finished." }
+            }
+            "/downloads" {
+                try {
+                    $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.tellActive" } | ConvertTo-Json
+                    $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
+                    if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
+                    $out = "📥 <b>ACTIVE DOWNLOADS</b>`n"
+                    foreach ($d in $res.result) {
+                        $pct = if ([double]$d.totalLength -gt 0) { [math]::Round(([double]$d.completedLength / [double]$d.totalLength) * 100, 1) } else { 0 }
+                        $spd = Format-Bytes ([double]$d.downloadSpeed)
+                        $out += "🔹 GID: <code>$($d.gid)</code> | $pct% | $spd/s`n"
+                    }
+                    Send-TelegramMessage $out
+                } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
+            }
             "/status" {
-                $text = Get-LiveDashboardText
-                $msgId = Send-TelegramMessage $text
+                $msgId = Send-TelegramMessage (Get-LiveDashboardText)
                 if ($msgId) {
-                    $global:DashboardMessageId = $msgId
-                    $global:DashboardLastUpdate = Get-Date
+                    $global:DashboardMessageId = $msgId; $global:DashboardLastUpdate = Get-Date
                     Write-BotLog "Live Dashboard activated on Message ID: $msgId" "SUCCESS"
                 }
             }
@@ -121,78 +147,62 @@ function Route-Command {
         return
     }
 
-    # --- JOB COMMANDS ---
     if ($Config.telegram.commands.jobs -contains $cmd) {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         
-        Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
+        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
+        if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date } }
         
         switch ($cmd) {
-            "/testjob" {
-                $seconds = if ($args -match '^\d+$') { [int]$args } else { 15 }
-                $sb = { param($Secs); Start-Sleep -Seconds $Secs; return "⏳ Test completed ($Secs s)" }
-                # FIXED: Passed as strict ordered Array
-                Submit-Job -JobId $jobId -CommandName "$cmd $seconds" -ScriptBlock $sb -ArgumentList @($seconds)
+            "/download" {
+                if (-not $rawUrl) { Send-TelegramMessage "⚠️ Please provide a URL. Example: /download http://..." ; return }
+                $sb = {
+                    param($JobId, $Url, $RpcPort, $CancelDict, $ProgressDict)
+                    $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
+                    
+                    $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.addUri"; params = @(@($Url)) } | ConvertTo-Json -Depth 5
+                    $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
+                    $gid = $res.result
+                    if (-not $gid) { throw "Failed to get GID from aria2" }
+                    
+                    $completed = $false
+                    while (-not $completed) {
+                        Start-Sleep -Seconds 2
+                        if ($CancelDict.ContainsKey($JobId)) {
+                            $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.remove"; params = @($gid) } | ConvertTo-Json
+                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
+                            throw "Cancelled by user (Data preserved for resume)."
+                        }
+                        
+                        $body = @{ jsonrpc = "2.0"; id = "1"; method = "aria2.tellStatus"; params = @($gid) } | ConvertTo-Json
+                        $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
+                        $info = $statusRes.result
+                        
+                        $ProgressDict[$JobId] = $info
+                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed") {
+                            $completed = $true
+                            if ($info.status -eq "error") { throw "Aria2 Error Code: $($info.errorCode)" }
+                        }
+                    }
+                    return "✅ Download successfully completed!"
+                }
+                Submit-Job -JobId $jobId -CommandName "$cmd" -ScriptBlock $sb -ArgumentList @($jobId, $rawUrl, $Config.aria2.rpcPort, $global:JobManager_CancelDict, $global:JobManager_ProgressDict)
             }
             "/diagnostics" {
                 $sb = {
                     param($WsPath, $JobStats)
-                    
-                    # 1. SYSTEM
                     $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-                    $os = Get-CimInstance Win32_OperatingSystem
-                    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
-                    
-                    # 2. STORAGE
+                    $ram = [math]::Round(((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize - (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory) / (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize * 100, 1)
                     $drvLet = if ($WsPath) { $WsPath.Substring(0,1) } else { "C" }
-                    $drv = Get-PSDrive -Name $drvLet
-                    $freeGb = [math]::Round($drv.Free / 1GB, 1)
-                    $statusStorage = if ($freeGb -gt 5) { "🟢" } else { "🔴" }
-                    
-                    # 3. NETWORK / INTERNET / DNS
-                    $netStatus = "🟢"
-                    $latency = "N/A"
-                    try {
-                        $ping = Test-NetConnection -ComputerName "api.telegram.org" -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
-                        if (-not $ping) { $netStatus = "🔴" } else { $latency = "OK" }
-                    } catch { $netStatus = "🔴" }
-
-                    # 4. RDP
-                    $rdpSvc = (Get-Service TermService -ErrorAction SilentlyContinue).Status
-                    $rdpStatus = if ($rdpSvc -eq 'Running') { "🟢" } else { "🔴" }
-                    
-                    # 5. TAILSCALE
-                    $tsSvc = (Get-Service Tailscale -ErrorAction SilentlyContinue).Status
-                    $tsStatus = if ($tsSvc -eq 'Running') { "🟢 CONNECTED" } else { "🔴 OFFLINE" }
-
-                    # FORMATTING THE REPORT
-                    $report = "🚀 <b>RDP MANAGER DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n"
-                    $report += "🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n"
-                    $report += "`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB $statusStorage`nPath: <code>$WsPath</code>`n"
-                    $report += "`n🌐 <b>NETWORK & API</b>`nInternet/DNS: $netStatus`n"
-                    $report += "`n🔗 <b>TAILSCALE</b>`nStatus: $tsStatus`n"
-                    $report += "`n🖥️ <b>RDP SERVICE</b>`nTermService: $rdpStatus`n"
-                    $report += "`n⚙️ <b>JOB ENGINE</b>`nWorkers: $($JobStats.Workers)`nRunning: $($JobStats.Running)`nCompleted: $($JobStats.Completed)`nFailed: $($JobStats.Failed)`n"
-                    $report += "━━━━━━━━━━━━━━━━━━━━`n"
-                    
-                    if ($statusStorage -eq "🔴" -or $netStatus -eq "🔴" -or $rdpStatus -eq "🔴") {
-                        $report += "⚠️ <b>WARNING: SOME CHECKS FAILED</b>"
-                    } else {
-                        $report += "🟢 <b>ALL SYSTEMS HEALTHY</b>"
-                    }
-                    
-                    return $report
+                    $freeGb = [math]::Round((Get-PSDrive -Name $drvLet).Free / 1GB, 1)
+                    return "🚀 <b>DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB`n`n🟢 <b>ALL SYSTEMS HEALTHY</b>"
                 }
-                
-                $stats = Get-JobManagerStats
-                # FIXED: Passed explicitly ordered variables to avoid Hashtable positional shuffle
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $stats)
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, (Get-JobManagerStats))
             }
         }
         return
     }
-
     Send-TelegramMessage "❓ Unknown command: $cmd`nUse /help for available commands."
 }
 
@@ -200,7 +210,7 @@ function Route-Command {
 # LONG POLLING & DASHBOARD TICK ENGINE
 # -------------------------------------------------------------------------
 Write-BotLog "Attempting to send startup message..." "INFO"
-Send-TelegramMessage "🚀 <b>BotService Started</b>`nLive Dashboard & Diagnostics online."
+Send-TelegramMessage "🚀 <b>BotService Started</b>`naria2 Download Engine is online."
 
 while ($true) {
     try {
@@ -210,24 +220,47 @@ while ($true) {
                 $Offset = $update.update_id + 1
                 $msg = $update.message
                 if (-not $msg.text) { continue }
-
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
                 Route-Command -Command $msg.text
             }
         }
     } catch { }
 
+    # Event Processor (Completion / Failures)
     $jobEvents = Invoke-JobManagerTick
     foreach ($event in $jobEvents) {
-        if ($event.Event -eq 'COMPLETED') {
-            Write-BotLog "Job $($event.JobId) Completed." "SUCCESS"
-            Send-TelegramMessage "✅ Job <code>$($event.JobId)</code> completed.`n`n$($event.Result)"
-        } elseif ($event.Event -eq 'FAILED') {
-            Write-BotLog "Job $($event.JobId) FAILED: $($event.Result)" "ERROR"
-            Send-TelegramMessage "❌ Job <code>$($event.JobId)</code> FAILED.`nCommand: $($event.Command)`nReason: $($event.Result)"
+        if ($global:JobMessageMap.ContainsKey($event.JobId)) {
+            $msgId = $global:JobMessageMap[$event.JobId].MessageId
+            if ($event.Event -eq 'COMPLETED') { Edit-TelegramMessage -MessageId $msgId -Text "✅ <b>$($event.JobId) COMPLETED</b>`n`n$($event.Result)" }
+            elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" }
+            $global:JobMessageMap.Remove($event.JobId)
         }
     }
 
+    # Progress Update Throttler (Updates aria2 visual bar every ~8 seconds)
+    $keys = @($global:JobManager_ProgressDict.Keys)
+    foreach ($jId in $keys) {
+        if ($global:JobMessageMap.ContainsKey($jId)) {
+            $msgData = $global:JobMessageMap[$jId]
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds($Config.aria2.progressUpdateSeconds)) {
+                $info = $global:JobManager_ProgressDict[$jId]
+                if ($info) {
+                    $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+                    $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+                    $progBar = Get-ProgressBar -Percent $pct
+                    $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
+                    $spdStr = Format-Bytes -Bytes $speed
+                    $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+                    
+                    $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
+                    Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
+                    $msgData.LastUpdate = Get-Date
+                }
+            }
+        }
+    }
+
+    # Dashboard Updater
     if ($global:DashboardMessageId -and ((Get-Date) -ge $global:DashboardLastUpdate.AddSeconds($Config.telegram.dashboardRefreshSeconds))) {
         $global:DashboardLastUpdate = Get-Date
         $dashText = Get-LiveDashboardText
