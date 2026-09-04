@@ -100,7 +100,7 @@ jobs:
           Write-Host "[ INFO ] Launching RustDesk and capturing screenshot..."
           $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
           Start-Process -FilePath $rdExe
-          Start-Sleep -Seconds 7 # Wait for GUI to load and fetch ID
+          Start-Sleep -Seconds 7 
           
           $screenshotPath = "$env:TEMP\rustdesk.png"
           Add-Type -AssemblyName System.Windows.Forms
@@ -118,9 +118,9 @@ jobs:
           Write-Host "[ OK ] Fallback credentials sent securely to Telegram."
 
       # ============================================================
-      # 05 | CUSTOMIZE ENVIRONMENT & SETUP MASTER BAT
+      # 05 | MINIMAL CUSTOMIZATION (BAT INJECTION)
       # ============================================================
-      - name: "05 | Customize Environment"
+      - name: "05 | Minimal Customization"
         shell: pwsh
         env:
           TAILSCALE_API_KEY: ${{ secrets.TAILSCALE_API_KEY }}
@@ -130,46 +130,19 @@ jobs:
           reg add "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}" /v IsInstalled /t REG_DWORD /d 0 /f | Out-Null
           reg add "HKLM\SOFTWARE\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /t REG_DWORD /d 1 /f | Out-Null
           
-          # Install Tools (Logs Exposed)
-          Write-Host "`n[ INFO ] Installing Tools (FDM, WizTree, Rclone)..."
-          choco install rclone wiztree freedownloadmanager -y --no-progress
-          
-          # Aesthetics: Profile Picture
-          Write-Host "`n[ INFO ] Injecting Profile Picture..."
-          $picUrl = "https://i.ibb.co/7dSJSb8v/photo-6212922132610617114-c.jpg"
-          $picDir = "C:\ProgramData\Microsoft\User Account Pictures"
-          Invoke-WebRequest -Uri $picUrl -OutFile "$picDir\user-192.png"
-          @("user.png","user.bmp","user-48.png","user-44.png","user-40.png","user-32.png","guest.png","guest.bmp") | ForEach-Object { Copy-Item "$picDir\user-192.png" "$picDir\$_" -Force }
-
-          # Aesthetics: Wallpaper
-          Write-Host "`n[ INFO ] Applying Hacker Wallpaper..."
-          $wpUrl = "https://i.ibb.co/vCD644wT/Chat-GPT-Image-Sep-3-2026-04-19-19-PM.png"
-          $wpPath = "C:\Users\Public\Wallpaper.png"
-          Invoke-WebRequest -Uri $wpUrl -OutFile $wpPath
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v Wallpaper /t REG_SZ /d $wpPath /f | Out-Null
-          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v WallpaperStyle /t REG_SZ /d 2 /f | Out-Null
-
           # Setup Sync Dir & Inject System Secrets for BAT
           New-Item -ItemType Directory -Force -Path "D:\GoogleDriveSync" | Out-Null
           [Environment]::SetEnvironmentVariable("TAILSCALE_API_KEY", "$env:TAILSCALE_API_KEY", "Machine")
           [Environment]::SetEnvironmentVariable("TAILSCALE_TAILNET", "$env:TAILSCALE_TAILNET", "Machine")
 
-          # Create Shortcuts & Copy MASTER_CONTROL.bat
+          # Copy MASTER_CONTROL.bat
           $publicDesktop = "C:\Users\Public\Desktop"
           if (Test-Path "$env:GITHUB_WORKSPACE\MASTER_CONTROL.bat") {
             Copy-Item "$env:GITHUB_WORKSPACE\MASTER_CONTROL.bat" "$publicDesktop\⚙️ MASTER CONTROL.bat" -Force
           } else {
             Write-Host "[ WARNING ] MASTER_CONTROL.bat not found in repository root!"
           }
-
-          $WshShell = New-Object -ComObject WScript.Shell
-          $wizPath = (Get-ChildItem -Path "C:\Program Files*" -Filter "WizTree*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          if ($wizPath) { $s = $WshShell.CreateShortcut("$publicDesktop\WizTree.lnk"); $s.TargetPath = $wizPath; $s.Save() }
-          
-          $fdmPath = (Get-ChildItem -Path "C:\Program Files*", "$env:LOCALAPPDATA" -Filter "fdm.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          if ($fdmPath) { $s = $WshShell.CreateShortcut("$publicDesktop\Free Download Manager.lnk"); $s.TargetPath = $fdmPath; $s.Save() }
-          
-          Write-Host "[ OK ] Customizations applied."
+          Write-Host "[ OK ] System prepped for Control Panel."
 
       # ============================================================
       # 06 | TELEGRAM NOTIFICATION (RAPID BOOT COMPLETE)
@@ -187,10 +160,9 @@ jobs:
           ✅ <b>IP:</b> <code>$env:TAILSCALE_IP</code>
           ✅ <b>User:</b> <code>$env:RDP_USERNAME</code>
           
-          <b>⚙️ NEW FEATURES LOADED:</b>
-          • FDM, WizTree, and Rclone are ready.
-          • Aesthetics injected (Wallpaper/Avatar).
-          • <code>MASTER CONTROL.bat</code> is on your desktop. Use it to wipe 80GB of bloatware or auto-destruct!
+          <b>⚙️ SERVER READY:</b>
+          • <code>⚙️ MASTER CONTROL.bat</code> is on your desktop.
+          • Open it to install IDM, wipe bloatware, or auto-destruct!
           "@
           Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage" -Method Post -Body @{ chat_id = $env:TELEGRAM_CHAT_ID; text = $htmlMessage; parse_mode = "HTML" } | Out-Null
 
