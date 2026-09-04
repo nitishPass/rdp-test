@@ -169,7 +169,10 @@ function Route-Command {
                     # FORMATTING THE REPORT (Cyberpunk Aesthetic)
                     $report = "🚀 <b>RDP MANAGER DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n"
                     $report += "🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n"
-                    $report += "`n💾 <b>WORKSPACE ($drvLet:)</b>`nFree Space: $freeGb GB $statusStorage`nPath: <code>$WsPath</code>`n"
+                    
+                    # FIXED: Added braces around drive variable to prevent ParserError
+                    $report += "`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB $statusStorage`nPath: <code>$WsPath</code>`n"
+                    
                     $report += "`n🌐 <b>NETWORK & API</b>`nInternet/DNS: $netStatus`n"
                     $report += "`n🔗 <b>TAILSCALE</b>`nStatus: $tsStatus`n"
                     $report += "`n🖥️ <b>RDP SERVICE</b>`nTermService: $rdpStatus`n"
