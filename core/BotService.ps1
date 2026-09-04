@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 2)
+    RDP Manager - BotService (Phase 3)
 .DESCRIPTION
-    Dedicated long-polling Telegram controller.
+    Control Plane for Telegram. Polls updates, routes commands, delegates heavy 
+    work to JobManager, and consumes async completion events.
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -18,7 +19,7 @@ function Write-BotLog {
     Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE PROCESS STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 3) STARTED ===" "INFO"
 
 # -------------------------------------------------------------------------
 # 1. INITIALIZATION & SECURITY
@@ -42,65 +43,78 @@ $JobCounter = 1
 Write-BotLog "Secrets verified. Allowed Chat: $AllowedChatId | Admin: $AdminUserId" "SUCCESS"
 
 # -------------------------------------------------------------------------
-# 2. HELPER FUNCTIONS
+# 2. INITIALIZE ASYNC JOB MANAGER
+# -------------------------------------------------------------------------
+# We dot-source the JobManager module so BotService can access its functions
+. (Join-Path $PSScriptRoot "JobManager.ps1")
+Initialize-JobManager
+
+# -------------------------------------------------------------------------
+# 3. HELPER FUNCTIONS
 # -------------------------------------------------------------------------
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML")
     try {
         $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
         Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload | Out-Null
-        Write-BotLog "Sent message to Telegram successfully." "SUCCESS"
     } catch {
         Write-BotLog "TELEGRAM API ERROR: $($_.Exception.Message)" "ERROR"
     }
 }
 
-function Get-SystemStatus {
-    try {
-        $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-        $os = Get-CimInstance Win32_OperatingSystem
-        $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
-        
-        $driveLetter = if ($WorkspacePath) { $WorkspacePath.Substring(0,1) } else { "C" }
-        $drive = Get-PSDrive -Name $driveLetter
-        $disk = [math]::Round((($drive.Used) / ($drive.Used + $drive.Free)) * 100, 1)
-        
-        # FIXED: Using PowerShell native newlines (`n) instead of %0A
-        return "🖥️ <b>SYSTEM STATUS</b>`nCPU: $cpu%`nRAM: $ram%`nWorkspace Disk (${driveLetter}:): $disk%"
-    } catch {
-        return "⚠️ Error generating system status."
-    }
-}
-
 # -------------------------------------------------------------------------
-# 3. COMMAND ROUTER
+# 4. COMMAND ROUTER (Delegates to JobManager)
 # -------------------------------------------------------------------------
 function Route-Command {
-    param ([string]$Command)
+    param ([string]$CommandText)
     
-    # FIXED: Convert to lowercase, trim spaces, and strip out the @bot_username suffix
-    $cmd = $Command.ToLower().Trim() -replace '@.*', ''
+    # Extract root command and arguments (e.g. "/testjob 15")
+    $parts = ($CommandText.ToLower().Trim() -replace '@.*', '') -split '\s+', 2
+    $cmd = $parts[0]
+    $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+    
     Write-BotLog "Routing command: $cmd" "INFO"
     
+    # --- LIGHTWEIGHT COMMANDS (Immediate, Synchronous) ---
     if ($Config.telegram.commands.lightweight -contains $cmd) {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/help" { Send-TelegramMessage "🤖 <b>Available Commands:</b>`n/ping - Check connectivity`n/status - Generate system report" }
+            "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
+            "/help" { Send-TelegramMessage "🤖 <b>Available Commands:</b>`n/ping - Connectivity`n/jobs - View running background jobs`n/status - System report`n/testjob [seconds] - Run a fake background workload" }
         }
         return
     }
 
+    # --- JOB COMMANDS (Delegated to Runspace Pool) ---
     if ($Config.telegram.commands.jobs -contains $cmd) {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         
         Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
-        Write-BotLog "Processing $jobId ($cmd)..." "INFO"
         
         switch ($cmd) {
             "/status" { 
-                $result = Get-SystemStatus 
-                Send-TelegramMessage "✅ Job <code>$jobId</code> completed.`n`n$result"
+                # Defined as an isolated scriptblock for the Runspace
+                $sb = {
+                    param($WsPath)
+                    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
+                    $os = Get-CimInstance Win32_OperatingSystem
+                    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
+                    $drvLet = if ($WsPath) { $WsPath.Substring(0,1) } else { "C" }
+                    $drv = Get-PSDrive -Name $drvLet
+                    $disk = [math]::Round((($drv.Used) / ($drv.Used + $drv.Free)) * 100, 1)
+                    return "🖥️ <b>SYSTEM STATUS</b>`nCPU: $cpu%`nRAM: $ram%`nWorkspace Disk (${drvLet}:): $disk%"
+                }
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -Arguments @{ WsPath = $WorkspacePath }
+            }
+            "/testjob" {
+                $seconds = if ($args -match '^\d+$') { [int]$args } else { 15 }
+                $sb = {
+                    param($Secs)
+                    Start-Sleep -Seconds $Secs
+                    return "⏳ Test job successfully ran in the background for $Secs seconds!"
+                }
+                Submit-Job -JobId $jobId -CommandName "$cmd $seconds" -ScriptBlock $sb -Arguments @{ Secs = $seconds }
             }
         }
         return
@@ -110,13 +124,14 @@ function Route-Command {
 }
 
 # -------------------------------------------------------------------------
-# 4. LONG POLLING ENGINE
+# 5. LONG POLLING ENGINE & EVENT PROCESSOR
 # -------------------------------------------------------------------------
 Write-BotLog "Attempting to send startup message..." "INFO"
-Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands."
+Send-TelegramMessage "🚀 <b>BotService (Phase 3) Started</b>`nAsync Job Queue is online."
 
 while ($true) {
     try {
+        # 1. Poll Telegram
         $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=$($Config.telegram.longPollingTimeoutSeconds)" -Method Get -TimeoutSec ($Config.telegram.longPollingTimeoutSeconds + 5)
         
         if ($updates.ok -and $updates.result.Count -gt 0) {
@@ -125,9 +140,6 @@ while ($true) {
                 $msg = $update.message
                 if (-not $msg.text) { continue }
 
-                Write-BotLog "Received: '$($msg.text)' from User ID: $($msg.from.id)" "INFO"
-
-                # AUTHORIZATION CHECK
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) {
                     Write-BotLog "ACCESS DENIED. Expected Chat: $AllowedChatId | Expected User: $AdminUserId" "WARN"
                     continue 
@@ -137,7 +149,18 @@ while ($true) {
             }
         }
     } catch {
-        Write-BotLog "Polling error (Network hiccup). Retrying in 5s..." "WARN"
-        Start-Sleep -Seconds $Config.telegram.retryBackoffSeconds
+        # Ignore timeout hiccups silently to keep logs clean
+    }
+
+    # 2. Process Async Job Events (The Magic!)
+    $jobEvents = Invoke-JobManagerTick
+    foreach ($event in $jobEvents) {
+        if ($event.Event -eq 'COMPLETED') {
+            Write-BotLog "Job $($event.JobId) Completed successfully." "SUCCESS"
+            Send-TelegramMessage "✅ Job <code>$($event.JobId)</code> completed.`n`n$($event.Result)"
+        } elseif ($event.Event -eq 'FAILED') {
+            Write-BotLog "Job $($event.JobId) FAILED: $($event.Result)" "ERROR"
+            Send-TelegramMessage "❌ Job <code>$($event.JobId)</code> FAILED.`nCommand: $($event.Command)`nReason: $($event.Result)"
+        }
     }
 }
