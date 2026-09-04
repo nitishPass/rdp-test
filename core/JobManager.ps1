@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    RDP Manager - Job Manager (Phase 3 & 4)
+    RDP Manager - Job Manager (Phase 5)
 .DESCRIPTION
-    Asynchronous Runspace Pool engine with exposed statistics.
+    Asynchronous Runspace Pool engine with thread-safe cancellation and progress tracking.
 #>
 
 $global:JobManager_Config = $Config
@@ -13,6 +13,10 @@ $global:JobManager_Pool.Open()
 $global:JobManager_Jobs = @{}
 $global:JobManager_TotalCompleted = 0
 $global:JobManager_TotalFailed = 0
+
+# Thread-safe dictionaries for cross-runspace communication
+$global:JobManager_CancelDict = [hashtable]::Synchronized(@{})
+$global:JobManager_ProgressDict = [hashtable]::Synchronized(@{})
 
 function Initialize-JobManager {
     Write-BotLog "Initializing Async JobManager (Max Workers: $($global:JobManager_Config.jobManager.maxWorkers))..." "INFO"
@@ -28,7 +32,6 @@ function Sync-JobState {
 }
 
 function Submit-Job {
-    # FIXED: Using a strict Array to prevent positional shuffling
     param([string]$JobId, [string]$CommandName, [scriptblock]$ScriptBlock, [array]$ArgumentList = @())
     
     $ps = [powershell]::Create().AddScript($ScriptBlock)
@@ -66,9 +69,13 @@ function Invoke-JobManagerTick {
         }
     }
     
-    foreach ($k in $completedKeys) { $global:JobManager_Jobs.Remove($k) }
-    if ($completedKeys.Count -gt 0) { Sync-JobState }
+    foreach ($k in $completedKeys) { 
+        $global:JobManager_Jobs.Remove($k)
+        $global:JobManager_CancelDict.Remove($k)
+        $global:JobManager_ProgressDict.Remove($k)
+    }
     
+    if ($completedKeys.Count -gt 0) { Sync-JobState }
     return $events
 }
 
