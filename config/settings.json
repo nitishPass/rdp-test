@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "project": {
     "name": "RDP Manager Workspace",
     "theme": "cyberpunk"
@@ -15,24 +15,13 @@
     "serviceName": "TermService",
     "firewallGroupName": "Remote Desktop"
   },
-  "software": [
-    {
-      "id": "idm",
-      "name": "Internet Download Manager",
-      "package": "internet-download-manager",
-      "manager": "chocolatey",
-      "role": "interactive"
-    },
-    {
-      "id": "aria2",
-      "name": "Aria2c Download Engine",
-      "package": "aria2",
-      "manager": "chocolatey",
-      "role": "bot"
+  "telegram": {
+    "longPollingTimeoutSeconds": 30,
+    "maxRetries": 5,
+    "retryBackoffSeconds": 5,
+    "commands": {
+      "lightweight": ["/ping", "/help"],
+      "jobs": ["/status"]
     }
-  ],
-  "features": {
-    "enableTelegramBot": false,
-    "enableAutoBackup": false
   }
 }
