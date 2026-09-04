@@ -1,9 +1,8 @@
 <#
 .SYNOPSIS
-    RDP Manager - Phase 1 & 2 Bootstrap
+    RDP Manager - Bootstrap (Phase 5)
 .DESCRIPTION
-    Validates configuration, dynamically allocates workspace storage, 
-    initializes RDP, and writes initial session state.
+    Validates config, allocates workspace, configures RDP, and starts aria2 RPC.
 #>
 
 [CmdletBinding()]
@@ -15,12 +14,7 @@ $ErrorActionPreference = 'Stop'
 
 function Write-Log {
     param ([string]$Message, [string]$Level = 'INFO')
-    $color = switch ($Level) {
-        'INFO' { 'Cyan' }
-        'WARN' { 'Yellow' }
-        'ERROR' { 'Red' }
-        'SUCCESS' { 'Green' }
-    }
+    $color = switch ($Level) { 'INFO'{'Cyan'} 'WARN'{'Yellow'} 'ERROR'{'Red'} 'SUCCESS'{'Green'} }
     Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] [$Level] $Message" -ForegroundColor $color
 }
 
@@ -37,10 +31,6 @@ try {
     
     $freeGB = [math]::Round($bestDrive.Free / 1GB, 2)
     Write-Log "Selected Drive $($bestDrive.Name): with $freeGB GB free space." "SUCCESS"
-
-    if ($freeGB -lt $Config.storage.minFreeSpaceGB) {
-        Write-Log "Warning: Free space is below $($Config.storage.minFreeSpaceGB) GB." "WARN"
-    }
 
     # 3. Workspace Initialization
     $workspacePath = Join-Path $bestDrive.Root $Config.storage.workspaceRootName
@@ -69,30 +59,37 @@ try {
             Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
             Write-Log "RDP User provisioned successfully." "SUCCESS"
-        } else {
-            Write-Log "RDP User already exists. Idempotent check passed." "INFO"
         }
-    } else {
-        throw "RDP credentials not found in environment variables."
-    }
+    } else { throw "RDP credentials not found in environment variables." }
 
     # 6. Session State Generation
     $sessionState = @{
         session_id = [guid]::NewGuid().ToString()
         status = "INITIALIZED"
-        workspace = @{
-            drive = $bestDrive.Name
-            root_path = $workspacePath
-        }
+        workspace = @{ drive = $bestDrive.Name; root_path = $workspacePath }
         timestamp = (Get-Date).ToString('o')
     }
     $sessionStateFile = Join-Path $statePath "session.json"
     $sessionState | ConvertTo-Json | Set-Content $sessionStateFile
-    Write-Log "Session state written to $sessionStateFile" "SUCCESS"
 
-    # 7. Export outputs for GitHub Actions
+    # 7. Start aria2c RPC Daemon
+    Write-Log "Installing aria2c Download Engine..." "INFO"
+    $aria2Path = Join-Path $workspacePath "aria2"
+    if (-not (Test-Path $aria2Path)) { New-Item -ItemType Directory -Path $aria2Path | Out-Null }
+    
+    $aria2Zip = "$env:TEMP\aria2.zip"
+    Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile $aria2Zip
+    Expand-Archive -Path $aria2Zip -DestinationPath $aria2Path -Force
+    $aria2Exe = (Get-ChildItem -Path $aria2Path -Filter "aria2c.exe" -Recurse).FullName
+
+    Write-Log "Starting aria2c RPC server on port $($Config.aria2.rpcPort)..." "INFO"
+    $ariaArgs = "--enable-rpc --rpc-listen-all=false --rpc-listen-port=$($Config.aria2.rpcPort) --dir=`"$downloadsPath`" --max-concurrent-downloads=$($Config.aria2.maxConcurrent) --split=$($Config.aria2.split) --continue=true"
+    Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
+    Write-Log "aria2c running in background." "SUCCESS"
+
+    # 8. Export outputs for GitHub Actions
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 1 Complete. Yielding to workflow orchestrator." "SUCCESS"
+    Write-Log "Phase 5 Bootstrap Complete." "SUCCESS"
 
 } catch {
     Write-Log $_.Exception.Message "ERROR"
