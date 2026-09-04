@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "project": {
     "name": "RDP Manager Workspace",
     "theme": "cyberpunk"
@@ -23,9 +23,10 @@
     "longPollingTimeoutSeconds": 30,
     "maxRetries": 5,
     "retryBackoffSeconds": 5,
+    "dashboardRefreshSeconds": 10,
     "commands": {
-      "lightweight": ["/ping", "/help", "/jobs"],
-      "jobs": ["/status", "/testjob"]
+      "lightweight": ["/ping", "/help", "/jobs", "/status"],
+      "jobs": ["/diagnostics", "/testjob"]
     }
   }
 }
