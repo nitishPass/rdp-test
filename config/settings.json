@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.3",
+  "schemaVersion": "1.4",
   "project": {
     "name": "RDP Manager Workspace",
     "theme": "cyberpunk"
@@ -19,14 +19,20 @@
     "maxWorkers": 2,
     "stateFileName": "jobs.json"
   },
+  "aria2": {
+    "rpcPort": 6800,
+    "maxConcurrent": 2,
+    "split": 8,
+    "progressUpdateSeconds": 8
+  },
   "telegram": {
     "longPollingTimeoutSeconds": 30,
     "maxRetries": 5,
     "retryBackoffSeconds": 5,
     "dashboardRefreshSeconds": 10,
     "commands": {
-      "lightweight": ["/ping", "/help", "/jobs", "/status"],
-      "jobs": ["/diagnostics", "/testjob"]
+      "lightweight": ["/ping", "/help", "/jobs", "/status", "/downloads", "/cancel"],
+      "jobs": ["/diagnostics", "/testjob", "/download"]
     }
   }
 }
