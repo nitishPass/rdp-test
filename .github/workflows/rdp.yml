@@ -1,4 +1,4 @@
-name: RDP Workspace (Phase 1)
+name: RDP Workspace (Phase 2)
 on: [workflow_dispatch]
 
 jobs:
@@ -9,11 +9,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Bootstrap Workspace
+      - name: Bootstrap Workspace & BotService
         shell: pwsh
         env:
           RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
         run: ./core/Bootstrap.ps1
 
       - name: Connect Tailscale
@@ -28,8 +31,8 @@ jobs:
           & $ts up --authkey="$env:TAILSCALE_AUTH_KEY" --hostname="rdp-workspace-test"
           Write-Host "Tailscale connected: $(& $ts ip -4)"
 
-      - name: Keep-Alive (Testing Mode)
+      - name: Session Keep-Alive
         shell: pwsh
         run: |
-          Write-Host "Workspace ready. Keeping runner alive for 30 minutes for manual verification..."
+          Write-Host "Workspace and BotService active. Waiting for Telegram commands..."
           Start-Sleep -Seconds 1800
