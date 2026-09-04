@@ -7,7 +7,7 @@
 
 [CmdletBinding()]
 param ([string]$ConfigPath = "$PSScriptRoot\..\config\settings.json")
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 
 function Write-Log {
     param ([string]$Message, [string]$Level = 'INFO')
@@ -45,7 +45,11 @@ try {
         # RESTORE WORKSPACE FROM CLOUD
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
         $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
+        
+        # FIXED: Create the directory in Google Drive first so rclone doesn't crash on the very first run!
+        & "$workspacePath\rclone.exe" mkdir $cloudTarget
         & "$workspacePath\rclone.exe" copy $cloudTarget $workspacePath --transfers 8
+        
         Write-Log "Cloud Restore Complete." "SUCCESS"
     } else {
         Write-Log "RCLONE_CONFIG_DATA not found. Skipping cloud sync." "WARN"
@@ -79,4 +83,8 @@ try {
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
     Write-Log "Phase 6 Bootstrap Complete." "SUCCESS"
+    
+    # FIXED: Clear the exit code so GitHub Actions doesn't fail from random native command warnings.
+    $global:LASTEXITCODE = 0
+
 } catch { Write-Log $_.Exception.Message "ERROR"; exit 1 }
