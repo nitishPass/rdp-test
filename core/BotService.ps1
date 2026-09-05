@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 9.1 - Restored Hybrid UI)
+    RDP Manager - BotService (Phase 9.2 - UI Refactor & VFS Watchdog)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -20,7 +20,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 9.1) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 9.2) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -31,6 +31,10 @@ $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
 $global:LastConsolePrint = Get-Date
 $global:DeleteQueue = @{} 
+
+# VFS Watchdog State
+$global:VFS_State = "UNMOUNTED"
+$global:LastVFSCheck = Get-Date
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
@@ -65,7 +69,8 @@ try {
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
-        $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
+        $payload = @{ chat_id = $AllowedChatId; text = $Text }
+        if ($ParseMode) { $payload["parse_mode"] = $ParseMode }
         if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
         
         $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
@@ -75,35 +80,112 @@ function Send-TelegramMessage {
         $global:MsgHistory += $mId
         ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
         return $mId
-    } catch { Write-BotLog "Telegram Send Error: $($_.Exception.Message)" "ERROR" }
+    } catch { 
+        $errMsg = $_.Exception.Message
+        if ($_.ErrorDetails) { $errMsg += " | Telegram API: " + $_.ErrorDetails.Message }
+        Write-BotLog "Telegram Send Error: $errMsg" "ERROR" 
+    }
 }
 
 function Edit-TelegramMessage {
     param ([string]$MessageId, [string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
-        $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
+        $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text }
+        if ($ParseMode) { $payload["parse_mode"] = $ParseMode }
         if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
         
         $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
         Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $jsonBody -ContentType "application/json" | Out-Null
-    } catch { }
+    } catch { 
+        $errMsg = $_.Exception.Message
+        if ($_.ErrorDetails) { $errMsg += " | Telegram API: " + $_.ErrorDetails.Message }
+        Write-BotLog "Telegram Edit Error: $errMsg" "ERROR" 
+    }
 }
 
+# ==========================================
+# UI REFACTOR: Horizontal Cyberpunk Theme
+# ==========================================
 function Get-LiveDashboardText {
     $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
     $os = Get-CimInstance Win32_OperatingSystem
     $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
     $drvLet = if ($WorkspacePath) { $WorkspacePath.Substring(0,1) } else { "C" }
     $drv = Get-PSDrive -Name $drvLet
-    $disk = [math]::Round((($drv.Used) / ($drv.Used + $drv.Free)) * 100, 1)
+    $disk = [math]::Round($drv.Free / 1GB, 1)
+    
     $uptime = (Get-Date) - $StartTime
-    $upStr = "{0:00}:{1:00}:{2:00}" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+    $upStr = "{0:00}h {1:00}m" -f $uptime.Hours, $uptime.Minutes
     $jStats = Get-JobManagerStats
 
-    $out = "┌─────────────────────────────┐`n│ 🖥️ <b>RDP MANAGER DASHBOARD</b>`n│ ───────────────────────────`n│ 🟢 SYSTEM ONLINE`n│`n"
-    $out += "│ CPU  $cpu%`n│ RAM  $ram%`n│ DISK $disk% (${drvLet}:)`n│`n"
-    $out += "│ Jobs: $($jStats.Running) RUNNING`n│ Uptime: $upStr`n│ Updated: $((Get-Date).ToString('HH:mm:ss'))`n└─────────────────────────────┘"
+    $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+    $tsStatus = if (Test-Path $tsPath) { "ONLINE" } else { "OFFLINE" }
+
+    $out = "━━━━━━━━━━━━━━━━━━━━`n"
+    $out += "      RDP STATUS`n"
+    $out += "━━━━━━━━━━━━━━━━━━━━`n`n"
+    $out += "🖥 CPU       $cpu%`n"
+    $out += "🧠 RAM       $ram%`n"
+    $out += "💾 DISK      $disk GB FREE`n"
+    $out += "⏱ UPTIME    $upStr`n`n"
+    $out += "🌐 TAILSCALE  $tsStatus`n"
+    $out += "🖥 RDP        READY`n"
+    $out += "📡 INTERNET   ONLINE`n`n"
+    $out += "━━━━━━━━━━━━━━━━━━━━`n"
+    $out += "        JOBS`n"
+    $out += "━━━━━━━━━━━━━━━━━━━━`n`n"
+    $out += "⚙️ Running    $($jStats.Running)`n"
+    $out += "✅ Completed  $($jStats.Completed)`n"
+    $out += "❌ Failed     $($jStats.Failed)"
+
     return $out
+}
+
+# ==========================================
+# PHASE 9.2: VFS Watchdog & Self-Healing
+# ==========================================
+function Invoke-VFSWatchdog {
+    # Check for rclone mount process via WMI to bypass Session 0/1 Isolation
+    $rcloneProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
+
+    if ($rcloneProc) {
+        if ($global:VFS_State -ne "HEALTHY") {
+            Write-BotLog "VFS Watchdog: Z:\ mount detected (PID: $($rcloneProc.ProcessId)). State -> HEALTHY." "SUCCESS"
+            $global:VFS_State = "HEALTHY"
+        }
+    } else {
+        # Only trigger recovery if the mount was previously established and then lost
+        if ($global:VFS_State -eq "HEALTHY" -or $global:VFS_State -eq "DEGRADED") {
+            $global:VFS_State = "DEGRADED"
+            Write-BotLog "VFS Watchdog: Mount process lost! Attempting controlled recovery..." "WARN"
+
+            # 1. Kill zombies
+            Stop-Process -Name "rclone" -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+
+            # 2. Re-execute the VBS script
+            $mountVbs = "C:\Users\Public\Desktop\mount.vbs"
+            if (Test-Path $mountVbs) {
+                Write-BotLog "VFS Watchdog: Dispatching mount.vbs payload..." "INFO"
+                Start-Process "wscript.exe" -ArgumentList "`"$mountVbs`"" -WindowStyle Hidden
+                Start-Sleep -Seconds 5
+
+                # 3. Verify Recovery
+                $checkProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
+                if ($checkProc) {
+                    $global:VFS_State = "HEALTHY"
+                    Write-BotLog "VFS Watchdog: Recovery successful. Virtual Drive Restored. State -> HEALTHY." "SUCCESS"
+                } else {
+                    $global:VFS_State = "FAILED"
+                    Write-BotLog "VFS Watchdog: Recovery failed. Rclone process did not stabilize." "ERROR"
+                    Send-TelegramMessage "⚠️ <b>VFS ALERT:</b> Z:\ CloudVault mount failed and could not be auto-recovered. Please check RDP." -ParseMode "HTML"
+                }
+            } else {
+                $global:VFS_State = "FAILED"
+                Write-BotLog "VFS Watchdog: mount.vbs missing. Cannot recover." "ERROR"
+            }
+        }
+    }
 }
 
 function Format-Bytes([double]$Bytes) {
@@ -147,7 +229,7 @@ function Route-Command {
     if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/stop - Terminate workflow`n/rdp - Connection Info" }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/status - View Dashboard`n/stop - Terminate workflow`n/rdp - Connection Info" }
             "/cancel" {
                 $target = $args.ToUpper().Trim()
                 if (-not $target) {
@@ -183,7 +265,7 @@ function Route-Command {
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
                     $msg += "<i>Double-click 'mount.vbs' on the desktop to access Z:!</i>"
                     
-                    $mId = Send-TelegramMessage $msg
+                    $mId = Send-TelegramMessage $msg -ParseMode "HTML"
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
                 } else {
                     Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
@@ -211,13 +293,14 @@ function Route-Command {
                             @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
                         ) ) }
                         
-                        Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup | Out-Null
+                        Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ParseMode "HTML" -ReplyMarkup $markup | Out-Null
                     }
                 } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
             }
             "/status" {
                 $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
-                Send-TelegramMessage (Get-LiveDashboardText) -ReplyMarkup $markup | Out-Null
+                # Sent WITHOUT ParseMode HTML to prevent strict tag parsing errors
+                Send-TelegramMessage (Get-LiveDashboardText) -ParseMode "" -ReplyMarkup $markup | Out-Null
             }
         }
         return
@@ -232,7 +315,7 @@ function Route-Command {
             @{ text="🛑 Cancel"; callback_data="cancel_$jobId" }
         ) ) }
         
-        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd" -ReplyMarkup $markup
+        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd" -ParseMode "HTML" -ReplyMarkup $markup
         if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date; LastConsoleMsg = "" } }
         
         switch ($cmd) {
@@ -296,7 +379,7 @@ function Route-Command {
     }
 }
 
-Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." | Out-Null
+Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." -ParseMode "HTML" | Out-Null
 
 while (-not $global:ShutdownRequested) {
     try {
@@ -314,7 +397,7 @@ while (-not $global:ShutdownRequested) {
                     
                     if ($cbData -eq "refresh_dash") {
                         $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
-                        Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ReplyMarkup $markup
+                        Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ParseMode "" -ReplyMarkup $markup
                     }
                     elseif ($cbData -match "^refresh_(.+)") {
                         $jId = $matches[1]
@@ -329,9 +412,9 @@ while (-not $global:ShutdownRequested) {
                                 $pct = $info.pct
                                 $progBar = Get-ProgressBar -Percent $pct
                                 $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
-                                Edit-TelegramMessage -MessageId $mId -Text $text -ReplyMarkup $markup
+                                Edit-TelegramMessage -MessageId $mId -Text $text -ParseMode "HTML" -ReplyMarkup $markup
                             } else {
-                                Edit-TelegramMessage -MessageId $mId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
+                                Edit-TelegramMessage -MessageId $mId -Text (Generate-JobUI -jId $jId -info $info) -ParseMode "HTML" -ReplyMarkup $markup
                             }
                         }
                     }
@@ -346,7 +429,7 @@ while (-not $global:ShutdownRequested) {
                             Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
                         }
                         
-                        Edit-TelegramMessage -MessageId $mId -Text "🛑 Cancellation requested for <code>$jId</code>..."
+                        Edit-TelegramMessage -MessageId $mId -Text "🛑 Cancellation requested for <code>$jId</code>..." -ParseMode "HTML"
                     }
                     continue
                 }
@@ -358,7 +441,9 @@ while (-not $global:ShutdownRequested) {
             }
         }
     } catch { 
-        Write-BotLog "API Polling Error: $($_.Exception.Message)" "WARN"
+        $errMsg = $_.Exception.Message
+        if ($_.ErrorDetails) { $errMsg += " | " + $_.ErrorDetails.Message }
+        Write-BotLog "API Polling Error: $errMsg" "WARN"
         Start-Sleep -Seconds 2
     }
 
@@ -367,41 +452,21 @@ while (-not $global:ShutdownRequested) {
         if ($global:JobMessageMap.ContainsKey($event.JobId)) {
             $msgId = $global:JobMessageMap[$event.JobId].MessageId
             if ($event.Event -eq 'COMPLETED') { 
-                Edit-TelegramMessage -MessageId $msgId -Text "✅ <b>$($event.JobId) COMPLETED</b>`n`n$($event.Result)" 
+                Edit-TelegramMessage -MessageId $msgId -Text "✅ <b>$($event.JobId) COMPLETED</b>`n`n$($event.Result)" -ParseMode "HTML"
                 if ($event.Command -eq '/relay') { 
                     Start-Sleep -Seconds 10
                     $global:ShutdownRequested = $true 
                 }
             }
-            elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" }
+            elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" -ParseMode "HTML"}
             $global:JobMessageMap.Remove($event.JobId)
         }
     }
 
-    # [FIX 3] Restored 5-second automatic UI updating while preserving interactive buttons
-    foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
-        if ($global:JobMessageMap.ContainsKey($jId)) {
-            $msgData = $global:JobMessageMap[$jId]
-            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(5)) {
-                $info = $global:JobManager_ProgressDict[$jId]
-                if ($info) {
-                    $markup = @{ inline_keyboard = @( ,( 
-                        @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
-                        @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
-                    ) ) }
-                    
-                    if ($info.type -eq "sys") {
-                        $pct = $info.pct
-                        $progBar = Get-ProgressBar -Percent $pct
-                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
-                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text -ReplyMarkup $markup
-                    } else {
-                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
-                    }
-                    $msgData.LastUpdate = Get-Date
-                }
-            }
-        }
+    # Watchdog Polling (Executes every 15 seconds)
+    if ((Get-Date) -ge $global:LastVFSCheck.AddSeconds(15)) {
+        Invoke-VFSWatchdog
+        $global:LastVFSCheck = Get-Date
     }
 
     $now = Get-Date
@@ -429,7 +494,7 @@ while (-not $global:ShutdownRequested) {
 
     if ((Get-Date) -ge $StartTime.AddMinutes($Config.relay.autoRelayMinutes)) {
         Write-BotLog "Auto-Relay time reached (340 mins). Triggering handoff." "WARN"
-        Send-TelegramMessage "⚠️ <b>RUNNER TIME LIMIT APPROACHING (340 MINS)</b>`nTriggering automatic workspace relay..."
+        Send-TelegramMessage "⚠️ <b>RUNNER TIME LIMIT APPROACHING (340 MINS)</b>`nTriggering automatic workspace relay..." -ParseMode "HTML"
         Route-Command -Command "/relay"
         $StartTime = (Get-Date).AddDays(1) 
     }
