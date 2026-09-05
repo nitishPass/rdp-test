@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.3 - Concurrency & JSON UI Fix)
+    RDP Manager - BotService (Phase 8.4 - UI Update)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +16,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.3) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.4) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -55,7 +55,6 @@ try {
     }
 } catch { }
 
-# [FIX 2] Explicitly convert payloads to JSON string and set ContentType!
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
@@ -158,7 +157,7 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Double-click 'Mount_CloudVault.bat' on the desktop to access Z:!</i>"
+                    $msg += "<i>Double-click 'Mount_CloudVault.vbs' on the desktop to access Z:!</i>"
                     
                     $mId = Send-TelegramMessage $msg
                     
@@ -360,7 +359,6 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # [FIX 1] Snapshot the keys into an array `@()` before looping to prevent background thread concurrency crashes!
     if ((Get-Date) -ge $global:LastConsolePrint.AddSeconds(10)) {
         foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
             $info = $global:JobManager_ProgressDict[$jId]
