@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.4)
+    RDP Manager - RelayManager (Phase 6.5)
 .DESCRIPTION
     Handles rclone cloud synchronization and GitHub API runner handoffs.
 #>
@@ -28,10 +28,20 @@ function Sync-CloudWorkspace {
     $confPath = "$env:APPDATA\rclone\rclone.conf"
     $logPath = Join-Path $WsPath "State\rclone_sync.log"
     
-    # 2. Push Local -> Cloud (FIXED: Pass arguments as a single clean string)
-    $argString = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated"
+    # FIXED: Use an array and let Start-Process handle the quotation marks automatically!
+    $argsList = @(
+        "copy", 
+        $WsPath, 
+        $cloudTarget, 
+        "--config", $confPath, 
+        "--exclude", "State/bot.log", 
+        "--exclude", "State/rclone_sync.log", 
+        "--transfers", "4", 
+        "--retries", "3", 
+        "--local-no-check-updated"
+    )
     
-    $proc = Start-Process -FilePath $rclone -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+    $proc = Start-Process -FilePath $rclone -ArgumentList $argsList -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
     
     if ($null -eq $proc.ExitCode -or $proc.ExitCode -ne 0) { 
         $errLog = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
