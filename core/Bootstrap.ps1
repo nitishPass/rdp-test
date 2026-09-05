@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 10.3 - Visible Post-Login Workstation Setup)
+    RDP Manager - Bootstrap (Phase 10.5 - Parallel Admin Terminals & Auto-Mount)
 #>
 
 [CmdletBinding()]
@@ -100,106 +100,127 @@ try {
     }
 
     # ====================================================================
-    # VISIBLE POST-LOGIN SETUP INJECTION (JSON Driven)
+    # PARALLEL POST-LOGIN INJECTION (Debloat & Software)
     # ====================================================================
-    Write-Log "Injecting Post-Login Setup Script..." "INFO"
+    Write-Log "Injecting Parallel Admin Setup Scripts..." "INFO"
+    
+    # 1. Force Silent UAC Elevation so terminals pop up without asking for permission
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -ErrorAction SilentlyContinue
+
     $desktopPath = "C:\Users\Public\Desktop"
     if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
     
-    # [FIX 1] Inject into Default User so it runs natively in YOUR session, fully visible!
     $startupPath = "C:\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
     if (-not (Test-Path $startupPath)) { New-Item -ItemType Directory -Path $startupPath -Force | Out-Null }
 
-    $setupPs1 = "$desktopPath\WorkstationSetup.ps1"
-    $setupBat = "$startupPath\Init_RDP.bat"
+    $debloatPs1 = "$desktopPath\01_GreatDebloat.ps1"
+    $installPs1 = "$desktopPath\02_SoftwareInstaller.ps1"
+    $startupBat = "$startupPath\00_Init_RDP.bat"
 
-    $ps1Content = @'
-$Host.UI.RawUI.WindowTitle = "RDP Workstation Configurator"
+    # RED TERMINAL: The Great Debloat
+    $debloatContent = @'
+$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 1/2 - The Great Debloat"
+$Host.UI.RawUI.BackgroundColor = "DarkRed"
+Clear-Host
+
+Write-Host "================================================================" -ForegroundColor White
+Write-Host "   RECLAIMING C: DRIVE SPACE (ADMINISTRATOR)                    " -ForegroundColor White
+Write-Host "================================================================`n" -ForegroundColor White
+
+$softwareFile = "{WORKSPACE_PATH}\System\software.json"
+if (Test-Path $softwareFile) {
+    $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+    $totalCleaned = 0
+    if ($swData.cleanup_paths) {
+        foreach ($junk in $swData.cleanup_paths) {
+            if (Test-Path $junk) {
+                Write-Host " [X] Nuking $junk..." -ForegroundColor Yellow
+                Remove-Item -Path $junk -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
+                $totalCleaned++
+            }
+        }
+    }
+    Write-Host "`n[+] Cleanup Complete! Removed $totalCleaned bloat directories." -ForegroundColor Green
+} else {
+    Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
+}
+Write-Host "`nYou can safely close this terminal." -ForegroundColor White
+'@
+    $debloatContent = $debloatContent -replace '\{WORKSPACE_PATH\}', $workspacePath
+    Set-Content -Path $debloatPs1 -Value $debloatContent
+
+    # BLUE TERMINAL: Software Installer
+    $installContent = @'
+$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 2/2 - Software Installer"
 $Host.UI.RawUI.BackgroundColor = "DarkBlue"
 Clear-Host
 
 Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "   CLOUD-NATIVE RDP WORKSTATION INITIALIZATION                  " -ForegroundColor White
+Write-Host "   DEPLOYING FUTURE-PROOF TECH STACK (ADMINISTRATOR)            " -ForegroundColor White
 Write-Host "================================================================`n" -ForegroundColor Cyan
 
 $softwareFile = "{WORKSPACE_PATH}\System\software.json"
-
 if (Test-Path $softwareFile) {
-    try {
-        $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
-        
-        # 1. JSON DRIVEN CLEANUP
-        Write-Host "[1/2] Reclaiming C: Drive Space (The Great Debloat)..." -ForegroundColor Yellow
-        $totalCleaned = 0
-        if ($swData.cleanup_paths) {
-            foreach ($junk in $swData.cleanup_paths) {
-                if (Test-Path $junk) {
-                    Write-Host "      [X] Deleting $junk..." -ForegroundColor Red
-                    Remove-Item -Path $junk -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
-                    $totalCleaned++
-                }
-            }
+    $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+    $toInstall = @()
+    if ($swData.packages) {
+        foreach ($pkg in $swData.packages) {
+            if ($pkg.enabled -eq $true) { $toInstall += $pkg.id }
         }
-        Write-Host "      Cleanup Complete! Removed $totalCleaned bloat directories.`n" -ForegroundColor Green
-
-        # 2. JSON DRIVEN SOFTWARE INSTALL
-        Write-Host "[2/2] Installing Software Stack..." -ForegroundColor Yellow
-        $toInstall = @()
-        if ($swData.packages) {
-            foreach ($pkg in $swData.packages) {
-                if ($pkg.enabled -eq $true) { $toInstall += $pkg.id }
-            }
-        }
-        
-        if ($toInstall.Count -gt 0) {
-            $pkgString = $toInstall -join " "
-            Write-Host "      [+] Installing: $pkgString`n" -ForegroundColor Cyan
-            Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y" -Wait -NoNewWindow
-            Write-Host "`n      Software stack deployed!" -ForegroundColor Green
-        } else {
-            Write-Host "      No enabled packages found in software.json." -ForegroundColor DarkGray
-        }
-
-    } catch {
-        Write-Host "`n[!] CRITICAL ERROR reading software.json: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    
+    if ($toInstall.Count -gt 0) {
+        $pkgString = $toInstall -join " "
+        Write-Host "[+] Installing: $pkgString`n" -ForegroundColor Cyan
+        Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y" -Wait -NoNewWindow
+        Write-Host "`n[+] Software stack deployed!" -ForegroundColor Green
+    } else {
+        Write-Host "[-] No enabled packages found." -ForegroundColor DarkGray
     }
 } else {
-    Write-Host "`n[!] ERROR: System\software.json not found in CloudVault!" -ForegroundColor Red
+    Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
 }
-
-Write-Host "`n================================================================" -ForegroundColor Cyan
-Write-Host "   SETUP FINISHED!                                              " -ForegroundColor White
-Write-Host "   You can safely close this terminal window now.               " -ForegroundColor DarkGray
-Write-Host "================================================================" -ForegroundColor Cyan
-
-# Self-destruct the shortcut so it doesn't run on next reconnect!
-$startupFile = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Init_RDP.bat"
-if (Test-Path $startupFile) { Remove-Item -Path $startupFile -Force -ErrorAction SilentlyContinue }
+Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
 '@
-    $ps1Content = $ps1Content -replace '\{WORKSPACE_PATH\}', $workspacePath
-    Set-Content -Path $setupPs1 -Value $ps1Content
-    
-    # [FIX 2] Use 'start' so it stays open and visible for the user
-    $batContent = "@echo off`nstart powershell.exe -NoExit -ExecutionPolicy Bypass -File `"$setupPs1`""
-    Set-Content -Path $setupBat -Value $batContent
-    Write-Log "Visible Post-Login script deployed successfully." "SUCCESS"
-    # ====================================================================
+    $installContent = $installContent -replace '\{WORKSPACE_PATH\}', $workspacePath
+    Set-Content -Path $installPs1 -Value $installContent
 
-    # Deploy Custom Mount VBS
+    # MASTER STARTUP BATCH (Launches both simultaneously as Admin, then deletes itself)
+    $batContent = "@echo off`n"
+    $batContent += "start powershell.exe -WindowStyle Hidden -Command `"Start-Process powershell -ArgumentList '-NoExit -ExecutionPolicy Bypass -File ''$debloatPs1''' -Verb RunAs`"`n"
+    $batContent += "start powershell.exe -WindowStyle Hidden -Command `"Start-Process powershell -ArgumentList '-NoExit -ExecutionPolicy Bypass -File ''$installPs1''' -Verb RunAs`"`n"
+    $batContent += "(goto) 2>nul & del `"%~f0`""
+    Set-Content -Path $startupBat -Value $batContent
+
+    # ====================================================================
+    # ADMIN WRAPPERS FOR VBS SCRIPTS (mount/unmount)
+    # ====================================================================
     $mountVbs = Join-Path $workspacePath "System\mount.vbs"
     $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
+    
     if (Test-Path $mountVbs) {
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
-        Copy-Item -Path $mountVbs -Destination "$startupPath\mount.vbs" -Force
+        
+        # Desktop Admin Shortcut
+        $mountBat = "$desktopPath\Mount_CloudVault_Admin.bat"
+        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\mount.vbs`"' -Verb RunAs`"" | Set-Content -Path $mountBat
+        
+        # Auto-Mount Admin Script in Startup!
+        $autoMount = "$startupPath\01_AutoMount.bat"
+        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\mount.vbs`"' -Verb RunAs`"" | Set-Content -Path $autoMount
     }
+    
     if (Test-Path $unmountVbs) {
         Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
+        
+        # Desktop Admin Shortcut
+        $unmountBat = "$desktopPath\Unmount_CloudVault_Admin.bat"
+        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\unmount.vbs`"' -Verb RunAs`"" | Set-Content -Path $unmountBat
     }
 
     # RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
-    Enable-NetFirewallRule -DisplayGroup $Config.rdp.firewallGroupName -ErrorAction SilentlyContinue | Out-Null
     if ((Get-Service $Config.rdp.serviceName).Status -ne 'Running') { Start-Service $Config.rdp.serviceName }
     if ($env:RDP_USERNAME -and $env:RDP_PASSWORD) {
         $secPass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
@@ -212,13 +233,10 @@ if (Test-Path $startupFile) { Remove-Item -Path $startupFile -Force -ErrorAction
 
     # Tailscale Setup
     if ($env:TAILSCALE_AUTH_KEY) {
-        Write-Log "Installing Tailscale VPN via Chocolatey..." "INFO"
         choco install tailscale -y --no-progress | Out-Null
         $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
         if (Test-Path $tsPath) {
-            Write-Log "Authenticating Tailscale network..." "INFO"
             & $tsPath up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="RDP-Worker-$env:GITHUB_RUN_ID" --reset
-            
             $tsIp = (& $tsPath ip -4 2>$null).Trim()
             Write-Log "Tailscale connected successfully!" "SUCCESS"
         }
@@ -241,7 +259,7 @@ if (Test-Path $startupFile) { Remove-Item -Path $startupFile -Force -ErrorAction
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 10.3 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 10.5 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
