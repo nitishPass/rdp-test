@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.2 - Drive Mount & UI Update)
+    RDP Manager - Bootstrap (Phase 8.3 - Session Isolation Fix)
 #>
 
 [CmdletBinding()]
@@ -51,14 +51,17 @@ try {
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
         
-        # [NEW] Install WinFsp and Mount Cloud Drive to Z:\
+        # [FIX 3] Generate the Mount .bat directly on the Desktop to bypass Session Isolation!
         Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
         choco install winfsp -y --no-progress | Out-Null
         
-        Write-Log "Mounting CloudVault as Local Drive Z:\..." "INFO"
-        $mountArgs = @("mount", "$($Config.relay.cloudDriveName):", "Z:", "--vfs-cache-mode", "writes", "--poll-interval", "10s")
-        Start-Process -FilePath "$workspacePath\rclone.exe" -ArgumentList $mountArgs -WindowStyle Hidden
-        Write-Log "Google Drive is now accessible at Z:\ inside RDP!" "SUCCESS"
+        $desktopPath = "C:\Users\Public\Desktop"
+        if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
+        $batPath = "$desktopPath\Mount_CloudVault.bat"
+        $batContent = "@echo off`nstart `"CloudVault`" `"$workspacePath\rclone.exe`" mount $($Config.relay.cloudDriveName): Z: --vfs-cache-mode writes --poll-interval 10s"
+        Set-Content -Path $batPath -Value $batContent
+        
+        Write-Log "Double-click 'Mount_CloudVault.bat' on the RDP Desktop to map Z: drive!" "SUCCESS"
 
     } else {
         Write-Log "RCLONE_CONFIG_DATA not found. Skipping cloud sync." "WARN"
@@ -87,7 +90,6 @@ try {
             Write-Log "Authenticating Tailscale network..." "INFO"
             & $tsPath up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="RDP-Worker-$env:GITHUB_RUN_ID" --reset
             
-            # [NEW] Print Tailscale IP directly to GitHub Console
             $tsIp = (& $tsPath ip -4 2>$null).Trim()
             Write-Log "Tailscale connected successfully!" "SUCCESS"
             Write-Log "==========================================" "SUCCESS"
@@ -117,7 +119,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 8 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 8.3 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
