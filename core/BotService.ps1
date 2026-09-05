@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 9.2 - UI Refactor & VFS Watchdog)
+    RDP Manager - BotService (Phase 9.3 - UI Array Fix & Clean Logs)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -20,7 +20,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 9.2) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 9.3) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -32,13 +32,24 @@ $global:ShutdownRequested = $false
 $global:LastConsolePrint = Get-Date
 $global:DeleteQueue = @{} 
 
-# VFS Watchdog State
 $global:VFS_State = "UNMOUNTED"
 $global:LastVFSCheck = Get-Date
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
 Initialize-JobManager
+
+# ==========================================
+# STRICT INLINE KEYBOARD GENERATOR (ANTI-UNROLLING)
+# ==========================================
+function New-SingleRowKeyboard {
+    param([array]$Buttons)
+    $r = New-Object System.Collections.ArrayList
+    foreach ($b in $Buttons) { $r.Add($b) | Out-Null }
+    $kb = New-Object System.Collections.ArrayList
+    $kb.Add($r) | Out-Null
+    return @{ inline_keyboard = $kb }
+}
 
 # ==========================================
 # VANISH PROTOCOL
@@ -52,7 +63,10 @@ try {
 if ($global:MsgHistory.Count -gt 0) {
     Write-BotLog "Executing Vanish Protocol: Deleting $($global:MsgHistory.Count) previous messages..." "INFO"
     foreach ($mId in $global:MsgHistory) {
-        Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$mId} -ErrorAction SilentlyContinue | Out-Null
+        # [FIX] Strict Try/Catch blocks the HTTP 400 errors from spamming the logs
+        try {
+            Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$mId} -ErrorAction Stop | Out-Null
+        } catch { }
     }
 }
 $global:MsgHistory = @()
@@ -103,9 +117,6 @@ function Edit-TelegramMessage {
     }
 }
 
-# ==========================================
-# UI REFACTOR: Horizontal Cyberpunk Theme
-# ==========================================
 function Get-LiveDashboardText {
     $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
     $os = Get-CimInstance Win32_OperatingSystem
@@ -141,11 +152,7 @@ function Get-LiveDashboardText {
     return $out
 }
 
-# ==========================================
-# PHASE 9.2: VFS Watchdog & Self-Healing
-# ==========================================
 function Invoke-VFSWatchdog {
-    # Check for rclone mount process via WMI to bypass Session 0/1 Isolation
     $rcloneProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
 
     if ($rcloneProc) {
@@ -154,23 +161,19 @@ function Invoke-VFSWatchdog {
             $global:VFS_State = "HEALTHY"
         }
     } else {
-        # Only trigger recovery if the mount was previously established and then lost
         if ($global:VFS_State -eq "HEALTHY" -or $global:VFS_State -eq "DEGRADED") {
             $global:VFS_State = "DEGRADED"
             Write-BotLog "VFS Watchdog: Mount process lost! Attempting controlled recovery..." "WARN"
 
-            # 1. Kill zombies
             Stop-Process -Name "rclone" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            # 2. Re-execute the VBS script
             $mountVbs = "C:\Users\Public\Desktop\mount.vbs"
             if (Test-Path $mountVbs) {
                 Write-BotLog "VFS Watchdog: Dispatching mount.vbs payload..." "INFO"
                 Start-Process "wscript.exe" -ArgumentList "`"$mountVbs`"" -WindowStyle Hidden
                 Start-Sleep -Seconds 5
 
-                # 3. Verify Recovery
                 $checkProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
                 if ($checkProc) {
                     $global:VFS_State = "HEALTHY"
@@ -263,7 +266,7 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Double-click 'mount.vbs' on the desktop to access Z:!</i>"
+                    $msg += "<i>Z: Drive is automatically mounted when you log in!</i>"
                     
                     $mId = Send-TelegramMessage $msg -ParseMode "HTML"
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
@@ -288,18 +291,16 @@ function Route-Command {
                         $jId = "GID-$($d.gid)"
                         $global:JobManager_ProgressDict[$jId] = $info
                         
-                        $markup = @{ inline_keyboard = @( ,( 
+                        $markup = New-SingleRowKeyboard -Buttons @(
                             @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
                             @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
-                        ) ) }
-                        
+                        )
                         Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ParseMode "HTML" -ReplyMarkup $markup | Out-Null
                     }
                 } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
             }
             "/status" {
-                $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
-                # Sent WITHOUT ParseMode HTML to prevent strict tag parsing errors
+                $markup = New-SingleRowKeyboard -Buttons @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } )
                 Send-TelegramMessage (Get-LiveDashboardText) -ParseMode "" -ReplyMarkup $markup | Out-Null
             }
         }
@@ -310,10 +311,10 @@ function Route-Command {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         
-        $markup = @{ inline_keyboard = @( ,( 
+        $markup = New-SingleRowKeyboard -Buttons @(
             @{ text="🔄 Refresh"; callback_data="refresh_$jobId" },
             @{ text="🛑 Cancel"; callback_data="cancel_$jobId" }
-        ) ) }
+        )
         
         $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd" -ParseMode "HTML" -ReplyMarkup $markup
         if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date; LastConsoleMsg = "" } }
@@ -396,17 +397,17 @@ while (-not $global:ShutdownRequested) {
                     Invoke-RestMethod -Uri "$ApiUrl/answerCallbackQuery" -Method Post -Body @{callback_query_id=$cb.id} -ErrorAction SilentlyContinue | Out-Null
                     
                     if ($cbData -eq "refresh_dash") {
-                        $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                        $markup = New-SingleRowKeyboard -Buttons @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } )
                         Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ParseMode "" -ReplyMarkup $markup
                     }
                     elseif ($cbData -match "^refresh_(.+)") {
                         $jId = $matches[1]
                         if ($global:JobManager_ProgressDict.ContainsKey($jId)) {
                             $info = $global:JobManager_ProgressDict[$jId]
-                            $markup = @{ inline_keyboard = @( ,( 
+                            $markup = New-SingleRowKeyboard -Buttons @(
                                 @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
                                 @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
-                            ) ) }
+                            )
                             
                             if ($info.type -eq "sys") {
                                 $pct = $info.pct
@@ -463,7 +464,6 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # Watchdog Polling (Executes every 15 seconds)
     if ((Get-Date) -ge $global:LastVFSCheck.AddSeconds(15)) {
         Invoke-VFSWatchdog
         $global:LastVFSCheck = Get-Date
@@ -472,8 +472,33 @@ while (-not $global:ShutdownRequested) {
     $now = Get-Date
     foreach ($dId in @($global:DeleteQueue.Keys)) {
         if ($now -ge $global:DeleteQueue[$dId]) {
-            Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$dId} -ErrorAction SilentlyContinue | Out-Null
+            try { Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$dId} -ErrorAction Stop | Out-Null } catch {}
             $global:DeleteQueue.Remove($dId)
+        }
+    }
+
+    foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
+        if ($global:JobMessageMap.ContainsKey($jId)) {
+            $msgData = $global:JobMessageMap[$jId]
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(5)) {
+                $info = $global:JobManager_ProgressDict[$jId]
+                if ($info) {
+                    $markup = New-SingleRowKeyboard -Buttons @(
+                        @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                        @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                    )
+                    
+                    if ($info.type -eq "sys") {
+                        $pct = $info.pct
+                        $progBar = Get-ProgressBar -Percent $pct
+                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text -ParseMode "HTML" -ReplyMarkup $markup
+                    } else {
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text (Generate-JobUI -jId $jId -info $info) -ParseMode "HTML" -ReplyMarkup $markup
+                    }
+                    $msgData.LastUpdate = Get-Date
+                }
+            }
         }
     }
 
