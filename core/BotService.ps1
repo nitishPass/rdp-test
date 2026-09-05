@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 10.3 - Professional UI & Full Vanish Protocol)
+    RDP Manager - BotService (Phase 10.5 - Administrative Action Binding)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -20,7 +20,6 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 10.3) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -31,7 +30,6 @@ $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
 $global:LastConsolePrint = Get-Date
 $global:DeleteQueue = @{} 
-
 $global:VFS_State = "UNMOUNTED"
 $global:LastVFSCheck = Get-Date
 
@@ -48,9 +46,6 @@ function New-SingleRowKeyboard {
     return @{ inline_keyboard = $kb }
 }
 
-# ==========================================
-# VANISH PROTOCOL (Now deletes User Commands too!)
-# ==========================================
 $HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
 try {
     $global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
@@ -153,7 +148,7 @@ function Invoke-VFSWatchdog {
 
     if ($rcloneProc) {
         if ($global:VFS_State -ne "HEALTHY") {
-            Write-BotLog "VFS Watchdog: Z:\ mount detected (PID: $($rcloneProc.ProcessId)). State -> HEALTHY." "SUCCESS"
+            Write-BotLog "VFS Watchdog: Z:\ mount detected. State -> HEALTHY." "SUCCESS"
             $global:VFS_State = "HEALTHY"
         }
     } else {
@@ -164,24 +159,23 @@ function Invoke-VFSWatchdog {
             Stop-Process -Name "rclone" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            $mountVbs = "C:\Users\Public\Desktop\mount.vbs"
-            if (Test-Path $mountVbs) {
-                Write-BotLog "VFS Watchdog: Dispatching mount.vbs payload..." "INFO"
-                Start-Process "wscript.exe" -ArgumentList "`"$mountVbs`"" -WindowStyle Hidden
+            # [FIX] VFS Watchdog now uses the Admin Wrapper to restore the mount
+            $mountBat = "C:\Users\Public\Desktop\Mount_CloudVault_Admin.bat"
+            if (Test-Path $mountBat) {
+                Start-Process "cmd.exe" -ArgumentList "/c `"$mountBat`"" -WindowStyle Hidden
                 Start-Sleep -Seconds 5
 
                 $checkProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
                 if ($checkProc) {
                     $global:VFS_State = "HEALTHY"
-                    Write-BotLog "VFS Watchdog: Recovery successful. Virtual Drive Restored. State -> HEALTHY." "SUCCESS"
+                    Write-BotLog "VFS Watchdog: Recovery successful. State -> HEALTHY." "SUCCESS"
                 } else {
                     $global:VFS_State = "FAILED"
-                    Write-BotLog "VFS Watchdog: Recovery failed. Rclone process did not stabilize." "ERROR"
-                    Send-TelegramMessage "⚠️ <b>VFS ALERT:</b> Z:\ CloudVault mount failed and could not be auto-recovered. Please check RDP." -ParseMode "HTML"
+                    Write-BotLog "VFS Watchdog: Recovery failed." "ERROR"
+                    Send-TelegramMessage "⚠️ <b>VFS ALERT:</b> Z:\ CloudVault mount failed and could not be auto-recovered. Please check RDP." -ParseMode "HTML" | Out-Null
                 }
             } else {
                 $global:VFS_State = "FAILED"
-                Write-BotLog "VFS Watchdog: mount.vbs missing. Cannot recover." "ERROR"
             }
         }
     }
@@ -227,12 +221,12 @@ function Route-Command {
     
     if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
-            "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/status - View Dashboard`n/stop - Terminate workflow`n/rdp - Connection Info" }
+            "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." | Out-Null }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/status - View Dashboard`n/stop - Terminate workflow`n/rdp - Connection Info" -ParseMode "HTML" | Out-Null }
             "/cancel" {
                 $target = $args.ToUpper().Trim()
                 if (-not $target) {
-                    Send-TelegramMessage "⚠️ Provide a Job ID (e.g., `/cancel JOB-001` or `/cancel GID-xxxx`)."
+                    Send-TelegramMessage "⚠️ Provide a Job ID (e.g., `/cancel JOB-001` or `/cancel GID-xxxx`)." | Out-Null
                     break
                 }
                 $global:JobManager_CancelDict[$target] = $true
@@ -243,11 +237,10 @@ function Route-Command {
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                     Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
                 }
-                
-                Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
+                Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>" -ParseMode "HTML" | Out-Null
             }
             "/stop" {
-                Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
+                Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately." -ParseMode "HTML" | Out-Null
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
                 try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null } catch {}
                 exit 0
@@ -262,25 +255,25 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Z: Drive & Workspace scripts will auto-launch when you log in!</i>"
+                    $msg += "<i>Drive Z: and Workstation scripts will automatically launch as Admin!</i>"
                     
                     $mId = Send-TelegramMessage $msg -ParseMode "HTML"
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
                 } else {
-                    Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
+                    Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved." -ParseMode "HTML" | Out-Null
                 }
             }
             "/workspace" {
                 $drvLet = $WorkspacePath.Substring(0,1)
                 $size = Format-Bytes ((Get-ChildItem $WorkspacePath -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
                 $rcloneStat = if (Test-Path "$WorkspacePath\rclone.exe") { "🟢 CONFIGURED" } else { "🔴 MISSING" }
-                Send-TelegramMessage "☁️ <b>WORKSPACE STATE</b>`n━━━━━━━━━━━━━━━━━━━━`nPath: <code>$WorkspacePath</code>`nLocal Size: $size`nRclone: $rcloneStat`n`n<i>Use /backup to sync to CloudVault.</i>"
+                Send-TelegramMessage "☁️ <b>WORKSPACE STATE</b>`n━━━━━━━━━━━━━━━━━━━━`nPath: <code>$WorkspacePath</code>`nLocal Size: $size`nRclone: $rcloneStat`n`n<i>Use /backup to sync to CloudVault.</i>" -ParseMode "HTML" | Out-Null
             }
             "/downloads" {
                 try {
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellActive`" }"
                     $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
-                    if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
+                    if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads." -ParseMode "HTML" | Out-Null; return }
                     
                     foreach ($d in $res.result) {
                         $info = $d; $info | Add-Member -MemberType NoteProperty -Name "jobType" -Value "download" -Force
@@ -293,7 +286,7 @@ function Route-Command {
                         )
                         Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ParseMode "HTML" -ReplyMarkup $markup | Out-Null
                     }
-                } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
+                } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." | Out-Null }
             }
             "/status" {
                 $markup = New-SingleRowKeyboard -Buttons @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } )
@@ -376,15 +369,17 @@ function Route-Command {
     }
 }
 
-# [FIX 3] PROFESSIONAL STARTUP MESSAGE!
 $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
 $tsIp = if (Test-Path $tsPath) { (& $tsPath ip -4 2>$null).Trim() } else { "OFFLINE" }
-$startMsg = "🚀 <b>SYSTEM ONLINE & READY</b>`n━━━━━━━━━━━━━━━━━━━━`n"
-$startMsg += "🌐 <b>IP:</b> <code>$tsIp</code>`n"
-$startMsg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
-$startMsg += "☁️ <b>CloudVault:</b> <code>Auto-Mounting (Z:)</code>`n`n"
-$startMsg += "<i>System has successfully initialized. Type /help to view commands.</i>"
-Send-TelegramMessage $startMsg -ParseMode "HTML" | Out-Null
+
+$bootMsg = "🚀 <b>SYSTEM ONLINE & READY</b>`n━━━━━━━━━━━━━━━━━━━━`n"
+$bootMsg += "🌐 <b>IP:</b> <code>$tsIp</code>`n"
+$bootMsg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
+$bootMsg += "☁️ <b>CloudVault:</b> <code>Auto-Mounting (Z:)</code>`n`n"
+$bootMsg += "<i>System has successfully initialized. Type /help to view commands.</i>"
+Send-TelegramMessage $bootMsg -ParseMode "HTML" | Out-Null
+Write-BotLog "=== BOT SERVICE (PHASE 10.5) INITIALIZED ===" "INFO"
+
 
 while (-not $global:ShutdownRequested) {
     try {
@@ -443,7 +438,6 @@ while (-not $global:ShutdownRequested) {
                 if (-not $msg.text) { continue }
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
                 
-                # [FIX 4] Track the user's typed commands so Vanish deletes them too!
                 $global:MsgHistory += $msg.message_id
                 ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
                 
