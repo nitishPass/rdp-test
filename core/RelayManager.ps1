@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.9 - Bulletproof)
+    RDP Manager - RelayManager (Phase 7.0 - Gigabit Mode)
 .DESCRIPTION
     Handles rclone cloud synchronization, log backups, and GitHub API runner handoffs.
 #>
@@ -17,7 +17,7 @@ function Sync-CloudWorkspace {
         $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
         Invoke-RestMethod -Uri $rpc -Method Post -Body "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.forcePauseAll`" }" -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
         Invoke-RestMethod -Uri $rpc -Method Post -Body "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.saveSession`" }" -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
-        Start-Sleep -Seconds 4
+        Start-Sleep -Seconds 2
     } catch { }
 
     Set-Status "Archiving System Logs..." 25
@@ -33,15 +33,17 @@ function Sync-CloudWorkspace {
     $confPath = "$env:APPDATA\rclone\rclone.conf"
     $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
-    Set-Status "Pushing files to CloudVault... (This may take a few minutes)" 50
+    Set-Status "Pushing files to CloudVault (Gigabit Mode Active)..." 50
     
-    # THE FIX: Bulletproof Array Splatting. Impossible to crash from bad quotes.
+    # FIXED: Added massive 128M chunks to completely bypass the Google Drive API bottleneck!
     $rcloneArgs = @(
         "copy", $WsPath, $cloudTarget, 
         "--config", $confPath, 
         "--exclude", "State/bot.log", 
         "--exclude", "State/rclone_sync.log", 
-        "--transfers", "4", 
+        "--transfers", "8", 
+        "--checkers", "8",
+        "--drive-chunk-size", "128M",
         "--retries", "3", 
         "--local-no-check-updated", 
         "--log-file", $rcloneLog, 
