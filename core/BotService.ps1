@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 9.3 - UI Array Fix & Clean Logs)
+    RDP Manager - BotService (Phase 10.3 - Professional UI & Full Vanish Protocol)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -20,7 +20,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 9.3) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 10.3) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -39,9 +39,6 @@ $global:LastVFSCheck = Get-Date
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
 Initialize-JobManager
 
-# ==========================================
-# STRICT INLINE KEYBOARD GENERATOR (ANTI-UNROLLING)
-# ==========================================
 function New-SingleRowKeyboard {
     param([array]$Buttons)
     $r = New-Object System.Collections.ArrayList
@@ -52,7 +49,7 @@ function New-SingleRowKeyboard {
 }
 
 # ==========================================
-# VANISH PROTOCOL
+# VANISH PROTOCOL (Now deletes User Commands too!)
 # ==========================================
 $HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
 try {
@@ -63,7 +60,6 @@ try {
 if ($global:MsgHistory.Count -gt 0) {
     Write-BotLog "Executing Vanish Protocol: Deleting $($global:MsgHistory.Count) previous messages..." "INFO"
     foreach ($mId in $global:MsgHistory) {
-        # [FIX] Strict Try/Catch blocks the HTTP 400 errors from spamming the logs
         try {
             Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$mId} -ErrorAction Stop | Out-Null
         } catch { }
@@ -266,7 +262,7 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Z: Drive is automatically mounted when you log in!</i>"
+                    $msg += "<i>Z: Drive & Workspace scripts will auto-launch when you log in!</i>"
                     
                     $mId = Send-TelegramMessage $msg -ParseMode "HTML"
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
@@ -380,7 +376,15 @@ function Route-Command {
     }
 }
 
-Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." -ParseMode "HTML" | Out-Null
+# [FIX 3] PROFESSIONAL STARTUP MESSAGE!
+$tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+$tsIp = if (Test-Path $tsPath) { (& $tsPath ip -4 2>$null).Trim() } else { "OFFLINE" }
+$startMsg = "🚀 <b>SYSTEM ONLINE & READY</b>`n━━━━━━━━━━━━━━━━━━━━`n"
+$startMsg += "🌐 <b>IP:</b> <code>$tsIp</code>`n"
+$startMsg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
+$startMsg += "☁️ <b>CloudVault:</b> <code>Auto-Mounting (Z:)</code>`n`n"
+$startMsg += "<i>System has successfully initialized. Type /help to view commands.</i>"
+Send-TelegramMessage $startMsg -ParseMode "HTML" | Out-Null
 
 while (-not $global:ShutdownRequested) {
     try {
@@ -438,6 +442,11 @@ while (-not $global:ShutdownRequested) {
                 $msg = $update.message
                 if (-not $msg.text) { continue }
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
+                
+                # [FIX 4] Track the user's typed commands so Vanish deletes them too!
+                $global:MsgHistory += $msg.message_id
+                ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
+                
                 Route-Command -Command $msg.text
             }
         }
