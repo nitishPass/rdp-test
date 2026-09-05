@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 6.1)
+    RDP Manager - BotService (Phase 6.4)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -161,11 +161,14 @@ function Route-Command {
                     $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
                     $safeUrl = $Url -replace '"', '\"'
                     
-                    # INJECTED LIMIT: Max 20MB/s so Azure doesn't download it instantly, giving us time to test /relay!
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"], {`"max-download-limit`": `"20M`"}] }"
                     $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                     $gid = $res.result
                     if (-not $gid) { throw "Failed to get GID from aria2." }
+                    
+                    # CRITICAL FIX: Force unpause in case the download was loaded from a paused cloud state!
+                    $unpauseBody = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.unpause`", `"params`": [`"$gid`"] }"
+                    Invoke-RestMethod -Uri $rpc -Method Post -Body $unpauseBody -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
                     
                     $completed = $false
                     while (-not $completed) {
@@ -193,7 +196,6 @@ function Route-Command {
             "/backup" {
                 $sb = {
                     param($WsPath, $CloudName, $RootName, $CorePath, $RpcPort)
-                    # CRITICAL FIX: Inject the missing functions into the background sandbox!
                     . (Join-Path $CorePath "RelayManager.ps1")
                     return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
                 }
@@ -202,7 +204,6 @@ function Route-Command {
             "/relay" {
                 $sb = {
                     param($WsPath, $CloudName, $RootName, $Repo, $Token, $CorePath, $RpcPort)
-                    # CRITICAL FIX: Inject the missing functions into the background sandbox!
                     . (Join-Path $CorePath "RelayManager.ps1")
                     $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
                     $relayRes = Invoke-RunnerRelay -Repo $Repo -Token $Token
