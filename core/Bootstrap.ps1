@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.4 - Universal Config & VBS Mount)
+    RDP Manager - Bootstrap (Phase 8.6 - Cloud-Native Config Vault)
 #>
 
 [CmdletBinding()]
@@ -26,12 +26,14 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $downloadsPath
     Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
 
-    # [FIX] Save config directly to the Workspace so all RDP users can read it!
-    $rcloneConf = Join-Path $workspacePath "rclone.conf"
+    # Set Universal Config Path so any user/VBS script can run rclone natively
+    $publicConf = "C:\Users\Public\rclone.conf"
 
     if ($env:RCLONE_CONFIG_DATA) {
-        Write-Log "Installing rclone & injecting config..." "INFO"
-        Set-Content -Path $rcloneConf -Value $env:RCLONE_CONFIG_DATA
+        Write-Log "Installing rclone & setting Universal Config..." "INFO"
+        Set-Content -Path $publicConf -Value $env:RCLONE_CONFIG_DATA
+        [Environment]::SetEnvironmentVariable("RCLONE_CONFIG", $publicConf, "Machine")
+        $env:RCLONE_CONFIG = $publicConf
         
         $rcloneZip = "$env:TEMP\rclone.zip"
         Invoke-WebRequest -Uri "https://downloads.rclone.org/v1.65.2/rclone-v1.65.2-windows-amd64.zip" -OutFile $rcloneZip
@@ -39,13 +41,20 @@ try {
         $rcloneExe = (Get-ChildItem -Path "$env:TEMP\rclone_ext" -Filter "rclone.exe" -Recurse).FullName
         Copy-Item $rcloneExe -Destination "$workspacePath\rclone.exe" -Force
         
+        # Add Rclone to Global PATH so your custom VBS commands work natively!
+        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($machinePath -notmatch [regex]::Escape($workspacePath)) {
+            [Environment]::SetEnvironmentVariable("Path", "$machinePath;$workspacePath", "Machine")
+            $env:Path += ";$workspacePath"
+        }
+        
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
         $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
         
-        & "$workspacePath\rclone.exe" mkdir $cloudTarget --config $rcloneConf
+        & "$workspacePath\rclone.exe" mkdir $cloudTarget
         
-        Write-Log "Downloading workspace from Google Drive (This will take a few minutes)..." "WARN"
-        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--config", $rcloneConf, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
+        Write-Log "Downloading workspace & System Vault from Google Drive..." "WARN"
+        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
         & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
@@ -53,31 +62,60 @@ try {
         Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
         choco install winfsp -y --no-progress | Out-Null
         
-        $desktopPath = "C:\Users\Public\Desktop"
-        if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
-        
-        # [FIX] Generate the invisible VBS mount script using your provided architecture
-        $vbsMountPath = "$desktopPath\Mount_CloudVault.vbs"
-        $vbsMountContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run """$workspacePath\rclone.exe"" mount $($Config.relay.cloudDriveName): Z: --config ""$rcloneConf"" --vfs-cache-mode writes --poll-interval 10s", 0, False
-"@
-        Set-Content -Path $vbsMountPath -Value $vbsMountContent
-
-        # [FIX] Generate the Kill script based on unmount_all_megadrive.vbs
-        $vbsUnmountPath = "$desktopPath\Unmount_CloudVault.vbs"
-        $vbsUnmountContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "taskkill /IM rclone.exe /F", 0, False
-"@
-        Set-Content -Path $vbsUnmountPath -Value $vbsUnmountContent
-        
-        Write-Log "Double-click 'Mount_CloudVault.vbs' on the RDP Desktop to map Z: drive invisibly!" "SUCCESS"
-
     } else {
-        Write-Log "RCLONE_CONFIG_DATA not found. Skipping cloud sync." "WARN"
+        Write-Log "RCLONE_CONFIG_DATA not found. Fatal Error." "ERROR"
+        exit 1
     }
 
+    # ====================================================================
+    # THE VAULT UNLOCK: Load secrets.json and deploy VBS scripts
+    # ====================================================================
+    $secretsFile = Join-Path $workspacePath "System\secrets.json"
+    if (Test-Path $secretsFile) {
+        Write-Log "Unlocking CloudVault secrets.json..." "INFO"
+        $vault = Get-Content $secretsFile -Raw | ConvertFrom-Json
+        
+        $env:TELEGRAM_BOT_TOKEN = $vault.telegram_bot_token
+        $env:TELEGRAM_CHAT_ID   = $vault.telegram_chat_id
+        $env:TELEGRAM_ADMIN_ID  = $vault.telegram_admin_id
+        $env:TAILSCALE_AUTH_KEY = $vault.tailscale_auth_key
+        $env:RDP_USERNAME       = $vault.rdp_username
+        $env:RDP_PASSWORD       = $vault.rdp_password
+        $env:GH_TOKEN           = $vault.gh_token
+
+        # Inject secrets permanently for the BotService step
+        $ghEnv = "$env:GITHUB_ENV"
+        "TELEGRAM_BOT_TOKEN=$($vault.telegram_bot_token)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TELEGRAM_CHAT_ID=$($vault.telegram_chat_id)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TELEGRAM_ADMIN_ID=$($vault.telegram_admin_id)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TAILSCALE_AUTH_KEY=$($vault.tailscale_auth_key)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "RDP_USERNAME=$($vault.rdp_username)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "RDP_PASSWORD=$($vault.rdp_password)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "GH_TOKEN=$($vault.gh_token)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        Write-Log "Secrets loaded and injected successfully!" "SUCCESS"
+    } else {
+        Write-Log "CRITICAL: System\secrets.json not found in Google Drive!" "ERROR"
+        exit 1
+    }
+
+    # Deploy user's custom VBS files to Desktop
+    $desktopPath = "C:\Users\Public\Desktop"
+    if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
+    
+    $mountVbs = Join-Path $workspacePath "System\mount.vbs"
+    $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
+    
+    if (Test-Path $mountVbs) {
+        Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
+        Write-Log "Deployed custom mount.vbs to Desktop." "SUCCESS"
+    }
+    if (Test-Path $unmountVbs) {
+        Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
+        Write-Log "Deployed custom unmount.vbs to Desktop." "SUCCESS"
+    }
+    # ====================================================================
+
+    # RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
     Enable-NetFirewallRule -DisplayGroup $Config.rdp.firewallGroupName -ErrorAction SilentlyContinue | Out-Null
@@ -91,6 +129,7 @@ WshShell.Run "taskkill /IM rclone.exe /F", 0, False
         }
     }
 
+    # Tailscale Setup
     if ($env:TAILSCALE_AUTH_KEY) {
         Write-Log "Installing Tailscale VPN via Chocolatey..." "INFO"
         choco install tailscale -y --no-progress | Out-Null
@@ -107,10 +146,9 @@ WshShell.Run "taskkill /IM rclone.exe /F", 0, False
         } else {
             Write-Log "Tailscale executable not found." "ERROR"
         }
-    } else {
-        Write-Log "TAILSCALE_AUTH_KEY not found. Skipping VPN setup." "WARN"
     }
 
+    # aria2 Initialization
     $aria2Path = Join-Path $workspacePath "aria2"
     if (-not (Test-Path $aria2Path)) {
         New-Item -ItemType Directory -Path $aria2Path | Out-Null
@@ -127,7 +165,7 @@ WshShell.Run "taskkill /IM rclone.exe /F", 0, False
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 8.4 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 8.6 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
