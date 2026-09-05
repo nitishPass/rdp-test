@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 7.0 - Gigabit Mode)
+    RDP Manager - RelayManager (Phase 7.1 - 512M Chunk Limit)
 .DESCRIPTION
     Handles rclone cloud synchronization, log backups, and GitHub API runner handoffs.
 #>
@@ -35,7 +35,7 @@ function Sync-CloudWorkspace {
     
     Set-Status "Pushing files to CloudVault (Gigabit Mode Active)..." 50
     
-    # FIXED: Added massive 128M chunks to completely bypass the Google Drive API bottleneck!
+    # FIXED: Cranked drive-chunk-size to 512M!
     $rcloneArgs = @(
         "copy", $WsPath, $cloudTarget, 
         "--config", $confPath, 
@@ -43,7 +43,7 @@ function Sync-CloudWorkspace {
         "--exclude", "State/rclone_sync.log", 
         "--transfers", "8", 
         "--checkers", "8",
-        "--drive-chunk-size", "128M",
+        "--drive-chunk-size", "512M",
         "--retries", "3", 
         "--local-no-check-updated", 
         "--log-file", $rcloneLog, 
