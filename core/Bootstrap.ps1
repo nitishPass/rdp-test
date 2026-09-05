@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 6.9 - Bulletproof)
+    RDP Manager - Bootstrap (Phase 8.0 - RDP & Tailscale Integration)
 .DESCRIPTION
-    Allocates workspace, installs rclone, restores cloud state, and starts aria2 with session memory.
+    Allocates workspace, installs rclone, restores cloud state, initializes Tailscale, and starts aria2.
 #>
 
 [CmdletBinding()]
@@ -47,7 +47,6 @@ try {
         
         & "$workspacePath\rclone.exe" mkdir $cloudTarget
         
-        # THE FIX: Added professional progress output for GitHub Actions!
         Write-Log "Downloading workspace from Google Drive (This will take a few minutes)..." "WARN"
         $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
         & "$workspacePath\rclone.exe" @rcloneArgs
@@ -71,7 +70,24 @@ try {
         }
     }
 
-    # 4. Start aria2c RPC Daemon (With Session Memory)
+    # 4. Tailscale VPN Installation & Authentication
+    if ($env:TAILSCALE_AUTH_KEY) {
+        Write-Log "Installing Tailscale VPN via Chocolatey..." "INFO"
+        choco install tailscale -y --no-progress | Out-Null
+        $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+        if (Test-Path $tsPath) {
+            Write-Log "Authenticating Tailscale network..." "INFO"
+            # Appends the GitHub Run ID to ensure a unique hostname on your VPN network!
+            & $tsPath up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="RDP-Worker-$env:GITHUB_RUN_ID" --reset
+            Write-Log "Tailscale connected successfully!" "SUCCESS"
+        } else {
+            Write-Log "Tailscale executable not found." "ERROR"
+        }
+    } else {
+        Write-Log "TAILSCALE_AUTH_KEY not found. Skipping VPN setup." "WARN"
+    }
+
+    # 5. Start aria2c RPC Daemon (With Session Memory)
     $aria2Path = Join-Path $workspacePath "aria2"
     if (-not (Test-Path $aria2Path)) {
         New-Item -ItemType Directory -Path $aria2Path | Out-Null
@@ -88,7 +104,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 6 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 8 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
