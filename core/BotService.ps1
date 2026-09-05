@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 7.0 - Gigabit Mode)
+    RDP Manager - BotService (Phase 7.1 - Full Log Sync & Killswitch)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -15,7 +15,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 7) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 7.1) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -95,17 +95,23 @@ function Route-Command {
     $cmd = $parts[0].ToLower()
     $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
     
-    if ($Config.telegram.commands.lightweight -contains $cmd) {
+    if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop") {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
             "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner" }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/stop - Terminate workflow" }
             "/cancel" {
                 $target = $args.ToUpper().Trim()
                 if ($global:JobManager_Jobs.ContainsKey($target)) {
                     $global:JobManager_CancelDict[$target] = $true
                     Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
                 }
+            }
+            "/stop" {
+                # FIXED: Instant Workflow Killswitch
+                Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
+                Write-BotLog "User requested immediate shutdown via /stop." "WARN"
+                exit 0
             }
             "/workspace" {
                 $drvLet = $WorkspacePath.Substring(0,1)
@@ -161,7 +167,6 @@ function Route-Command {
                     $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
                     $safeUrl = $Url -replace '"', '\"'
                     
-                    # FIXED: 20M Speed limit totally removed!
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"]] }"
                     $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                     $gid = $res.result
@@ -172,7 +177,7 @@ function Route-Command {
                     
                     $completed = $false
                     while (-not $completed) {
-                        Start-Sleep -Seconds 1 # FIXED: Dropped delay to 1 second for instant feedback
+                        Start-Sleep -Seconds 1
                         if ($CancelDict.ContainsKey($JobId)) {
                             $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                             Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
@@ -221,7 +226,6 @@ else { Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands.
 
 while (-not $global:ShutdownRequested) {
     try {
-        # FIXED: Lowered timeout to 1 second so the thread NEVER freezes and commands run instantly!
         $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=1" -Method Get -TimeoutSec 3
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
@@ -255,13 +259,10 @@ while (-not $global:ShutdownRequested) {
         if ($global:JobMessageMap.ContainsKey($jId)) {
             $msgData = $global:JobMessageMap[$jId]
             
-            # FIXED: Snappy 1-second UI refresh!
             if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(1)) {
                 $info = $global:JobManager_ProgressDict[$jId]
                 if ($info) {
                     if ($info.type -eq "sys") {
-                        
-                        # FIXED: Push System updates directly to the GitHub Actions Console!
                         if ($msgData.LastConsoleMsg -ne $info.msg) {
                             Write-BotLog "[$jId] Progress: $($info.pct)% - $($info.msg)" "INFO"
                             $msgData.LastConsoleMsg = $info.msg
@@ -280,6 +281,13 @@ while (-not $global:ShutdownRequested) {
                         $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
                         $spdStr = Format-Bytes -Bytes $speed
                         $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+                        
+                        # FIXED: Push Download updates to the GitHub Actions Console!
+                        $consoleMsg = "Download: $pct% | Speed: $spdStr/s"
+                        if ($msgData.LastConsoleMsg -ne $consoleMsg) {
+                            Write-BotLog "[$jId] $consoleMsg" "INFO"
+                            $msgData.LastConsoleMsg = $consoleMsg
+                        }
                         
                         $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
                         Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
