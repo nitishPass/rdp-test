@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 6.8 - Professional UI)
+    RDP Manager - BotService (Phase 7.0 - Gigabit Mode)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -15,7 +15,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 6) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 7) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -141,7 +141,7 @@ function Route-Command {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
-        if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date } }
+        if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date; LastConsoleMsg = "" } }
         
         switch ($cmd) {
             "/diagnostics" {
@@ -161,7 +161,8 @@ function Route-Command {
                     $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
                     $safeUrl = $Url -replace '"', '\"'
                     
-                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"], {`"max-download-limit`": `"20M`"}] }"
+                    # FIXED: 20M Speed limit totally removed!
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"]] }"
                     $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                     $gid = $res.result
                     if (-not $gid) { throw "Failed to get GID from aria2." }
@@ -171,7 +172,7 @@ function Route-Command {
                     
                     $completed = $false
                     while (-not $completed) {
-                        Start-Sleep -Seconds 2
+                        Start-Sleep -Seconds 1 # FIXED: Dropped delay to 1 second for instant feedback
                         if ($CancelDict.ContainsKey($JobId)) {
                             $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                             Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
@@ -220,7 +221,8 @@ else { Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands.
 
 while (-not $global:ShutdownRequested) {
     try {
-        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=$($Config.telegram.longPollingTimeoutSeconds)" -Method Get -TimeoutSec ($Config.telegram.longPollingTimeoutSeconds + 5)
+        # FIXED: Lowered timeout to 1 second so the thread NEVER freezes and commands run instantly!
+        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=1" -Method Get -TimeoutSec 3
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
                 $Offset = $update.update_id + 1
@@ -253,19 +255,25 @@ while (-not $global:ShutdownRequested) {
         if ($global:JobMessageMap.ContainsKey($jId)) {
             $msgData = $global:JobMessageMap[$jId]
             
-            # Ultra-fast 2 second refresh rate!
-            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(2)) {
+            # FIXED: Snappy 1-second UI refresh!
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(1)) {
                 $info = $global:JobManager_ProgressDict[$jId]
                 if ($info) {
                     if ($info.type -eq "sys") {
-                        # System Job UI (Relay/Backup)
+                        
+                        # FIXED: Push System updates directly to the GitHub Actions Console!
+                        if ($msgData.LastConsoleMsg -ne $info.msg) {
+                            Write-BotLog "[$jId] Progress: $($info.pct)% - $($info.msg)" "INFO"
+                            $msgData.LastConsoleMsg = $info.msg
+                        }
+                        
                         $pct = $info.pct
                         $progBar = Get-ProgressBar -Percent $pct
                         $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
                         Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
                         $msgData.LastUpdate = Get-Date
+                        
                     } elseif ($info.jobType -eq "download") {
-                        # Download Job UI
                         $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
                         $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
                         $progBar = Get-ProgressBar -Percent $pct
