@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.7 - The CRLF & Hybrid UI Fix)
+    RDP Manager - BotService (Phase 8.8 - Timeout Fix & Full Feature Restore)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -8,7 +8,7 @@ $StartTime = Get-Date
 $WorkspacePath = $env:WORKSPACE_ROOT
 $LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else { "C:\Users\Public\Desktop\bot_emergency.log" }
 
-# [FIX 1] Aggressively Trim all invisible CRLF/Newline characters from the tokens!
+# Aggressively Trim all invisible CRLF/Newline characters from the cloud tokens
 $BotToken = if ($env:TELEGRAM_BOT_TOKEN) { $env:TELEGRAM_BOT_TOKEN.Trim() } else { "" }
 $AllowedChatId = if ($env:TELEGRAM_CHAT_ID) { $env:TELEGRAM_CHAT_ID.Trim() } else { "" }
 $AdminUserId = if ($env:TELEGRAM_ADMIN_ID) { $env:TELEGRAM_ADMIN_ID.Trim() } else { "" }
@@ -21,7 +21,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.7) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.8) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -52,11 +52,12 @@ if ($global:MsgHistory.Count -gt 0) {
 $global:MsgHistory = @()
 ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
 
+# [FIX] Gave the boot flush a generous 15-second timeout
 try {
-    $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue
+    $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 15 -ErrorAction SilentlyContinue
     if ($flush.ok -and $flush.result.Count -gt 0) {
         $global:Offset = $flush.result[-1].update_id + 1
-        Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null
+        Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -TimeoutSec 15 -ErrorAction SilentlyContinue | Out-Null
     }
 } catch { }
 
@@ -166,7 +167,7 @@ function Route-Command {
             "/stop" {
                 Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
-                try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null } catch {}
+                try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null } catch {}
                 exit 0
             }
             "/rdp" {
@@ -298,7 +299,8 @@ Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." | Out
 
 while (-not $global:ShutdownRequested) {
     try {
-        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset&timeout=1" -Method Get -TimeoutSec 3
+        # [FIX] Massive 15-second Timeout window for PowerShell to prevent connection drops!
+        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset&timeout=5" -Method Get -TimeoutSec 15
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
                 $global:Offset = $update.update_id + 1
@@ -376,7 +378,6 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # [FIX 2] HYBRID UI: Auto-update the UI every 5 seconds so you aren't flying blind!
     foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
         if ($global:JobMessageMap.ContainsKey($jId)) {
             $msgData = $global:JobMessageMap[$jId]
