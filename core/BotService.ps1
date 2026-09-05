@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.0 - RDP & Tailscale Integration)
+    RDP Manager - BotService (Phase 8.1 - Poison Pill Protection)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +16,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.0) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.1) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -26,7 +26,7 @@ $AdminUserId = $env:TELEGRAM_ADMIN_ID
 
 if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { Write-BotLog "Missing credentials!"; exit 1 }
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
-$Offset = 0; $JobCounter = 1
+$global:Offset = 0; $JobCounter = 1
 $global:DashboardMessageId = $null; $global:DashboardLastUpdate = [DateTime]::MinValue
 $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
@@ -34,6 +34,16 @@ $global:ShutdownRequested = $false
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
 Initialize-JobManager
+
+# [FIX 1] BOOT FLUSH: Clear the Telegram queue so old offline commands don't trigger a suicide loop!
+try {
+    $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue
+    if ($flush.ok -and $flush.result.Count -gt 0) {
+        $global:Offset = $flush.result[-1].update_id + 1
+        Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null
+        Write-BotLog "Cleared $($flush.result.Count) old offline messages from Telegram queue." "INFO"
+    }
+} catch { }
 
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML")
@@ -111,6 +121,10 @@ function Route-Command {
             "/stop" {
                 Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
+                
+                # [FIX 2] CLEAN EXIT: Tell Telegram we read this before we die, so the next bot doesn't read it!
+                try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null } catch {}
+                
                 exit 0
             }
             "/rdp" {
@@ -242,10 +256,10 @@ else { Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands.
 
 while (-not $global:ShutdownRequested) {
     try {
-        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$Offset&timeout=1" -Method Get -TimeoutSec 3
+        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset&timeout=1" -Method Get -TimeoutSec 3
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
-                $Offset = $update.update_id + 1
+                $global:Offset = $update.update_id + 1
                 $msg = $update.message
                 if (-not $msg.text) { continue }
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
