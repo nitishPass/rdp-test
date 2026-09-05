@@ -31,8 +31,8 @@ jobs:
 
       - name: Bootstrap Workspace & Restore Cloud State
         run: ./core/Bootstrap.ps1
-        shell: powershell
+        shell: pwsh
 
       - name: BotService Keep-Alive & Relay Engine
         run: ./core/BotService.ps1
-        shell: powershell
+        shell: pwsh
