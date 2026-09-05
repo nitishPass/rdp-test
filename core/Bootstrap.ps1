@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 6)
+    RDP Manager - Bootstrap (Phase 6.9 - Bulletproof)
 .DESCRIPTION
-    Allocates workspace, installs rclone, restores cloud state, and starts aria2.
+    Allocates workspace, installs rclone, restores cloud state, and starts aria2 with session memory.
 #>
 
 [CmdletBinding()]
@@ -42,13 +42,15 @@ try {
         $rcloneExe = (Get-ChildItem -Path "$env:TEMP\rclone_ext" -Filter "rclone.exe" -Recurse).FullName
         Copy-Item $rcloneExe -Destination "$workspacePath\rclone.exe" -Force
         
-        # RESTORE WORKSPACE FROM CLOUD
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
         $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
         
-        # FIXED: Create the directory in Google Drive first so rclone doesn't crash on the very first run!
         & "$workspacePath\rclone.exe" mkdir $cloudTarget
-        & "$workspacePath\rclone.exe" copy $cloudTarget $workspacePath --transfers 8
+        
+        # THE FIX: Added professional progress output for GitHub Actions!
+        Write-Log "Downloading workspace from Google Drive (This will take a few minutes)..." "WARN"
+        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
+        & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
     } else {
@@ -69,7 +71,7 @@ try {
         }
     }
 
-    # 4. Start aria2c RPC Daemon
+    # 4. Start aria2c RPC Daemon (With Session Memory)
     $aria2Path = Join-Path $workspacePath "aria2"
     if (-not (Test-Path $aria2Path)) {
         New-Item -ItemType Directory -Path $aria2Path | Out-Null
@@ -77,14 +79,17 @@ try {
         Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile $aria2Zip
         Expand-Archive -Path $aria2Zip -DestinationPath $aria2Path -Force
     }
+    
+    $sessionFile = Join-Path $statePath "aria2.session"
+    if (-not (Test-Path $sessionFile)) { New-Item -ItemType File -Path $sessionFile -Force | Out-Null }
+
     $aria2Exe = (Get-ChildItem -Path $aria2Path -Filter "aria2c.exe" -Recurse).FullName
-    $ariaArgs = "--enable-rpc --rpc-listen-all=false --rpc-listen-port=$($Config.aria2.rpcPort) --dir=`"$downloadsPath`" --max-concurrent-downloads=$($Config.aria2.maxConcurrent) --split=$($Config.aria2.split) --continue=true"
+    $ariaArgs = "--enable-rpc --rpc-listen-all=false --rpc-listen-port=$($Config.aria2.rpcPort) --dir=`"$downloadsPath`" --max-concurrent-downloads=$($Config.aria2.maxConcurrent) --split=$($Config.aria2.split) --continue=true --save-session=`"$sessionFile`" --input-file=`"$sessionFile`""
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
     Write-Log "Phase 6 Bootstrap Complete." "SUCCESS"
     
-    # FIXED: Clear the exit code so GitHub Actions doesn't fail from random native command warnings.
     $global:LASTEXITCODE = 0
 
 } catch { Write-Log $_.Exception.Message "ERROR"; exit 1 }
