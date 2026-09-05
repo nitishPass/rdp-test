@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.2 - Interactive UI & Vanish Protocol)
+    RDP Manager - BotService (Phase 8.3 - Concurrency & JSON UI Fix)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +16,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.2) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.3) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -35,7 +35,6 @@ $global:LastConsolePrint = Get-Date
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
 Initialize-JobManager
 
-# [NEW] VANISH PROTOCOL: Delete all previous messages from the old workflow
 $HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
 $global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
 
@@ -48,7 +47,6 @@ if ($global:MsgHistory.Count -gt 0) {
 $global:MsgHistory = @()
 $global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
 
-# Boot Flush
 try {
     $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue
     if ($flush.ok -and $flush.result.Count -gt 0) {
@@ -57,25 +55,31 @@ try {
     }
 } catch { }
 
+# [FIX 2] Explicitly convert payloads to JSON string and set ContentType!
 function Send-TelegramMessage {
     param ([string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
         $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
-        if ($ReplyMarkup) { $payload["reply_markup"] = ($ReplyMarkup | ConvertTo-Json -Depth 5 -Compress) }
-        $resp = Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload
+        if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
+        
+        $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
+        $resp = Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $jsonBody -ContentType "application/json"
+        
         $mId = $resp.result.message_id
         $global:MsgHistory += $mId
         $global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
         return $mId
-    } catch { }
+    } catch { Write-BotLog "Telegram Send Error: $($_.Exception.Message)" "ERROR" }
 }
 
 function Edit-TelegramMessage {
     param ([string]$MessageId, [string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
         $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
-        if ($ReplyMarkup) { $payload["reply_markup"] = ($ReplyMarkup | ConvertTo-Json -Depth 5 -Compress) }
-        Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $payload | Out-Null
+        if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
+        
+        $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
+        Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $jsonBody -ContentType "application/json" | Out-Null
     } catch { }
 }
 
@@ -154,11 +158,10 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Drive Z:\ is mounted to your CloudVault!</i>"
+                    $msg += "<i>Double-click 'Mount_CloudVault.bat' on the desktop to access Z:!</i>"
                     
                     $mId = Send-TelegramMessage $msg
                     
-                    # [NEW] Auto-destruct thread!
                     if ($mId) {
                         $sb = {
                             param($mId, $cId, $botToken)
@@ -287,7 +290,6 @@ while (-not $global:ShutdownRequested) {
             foreach ($update in $updates.result) {
                 $global:Offset = $update.update_id + 1
                 
-                # [NEW] Handle Inline Buttons (Refresh / Cancel)
                 if ($update.callback_query) {
                     $cb = $update.callback_query
                     $cbData = $cb.data
@@ -322,7 +324,6 @@ while (-not $global:ShutdownRequested) {
                         $jId = $matches[1]
                         $global:JobManager_CancelDict[$jId] = $true
                         
-                        # Also handle bare aria2 GID cancellations directly from the /downloads menu
                         if ($jId -match "^GID-(.+)") {
                             $gid = $matches[1]
                             $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
@@ -359,9 +360,9 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # [NEW] Push progress updates silently to GitHub Actions Console every 10 seconds (no Telegram spam)
+    # [FIX 1] Snapshot the keys into an array `@()` before looping to prevent background thread concurrency crashes!
     if ((Get-Date) -ge $global:LastConsolePrint.AddSeconds(10)) {
-        foreach ($jId in $global:JobManager_ProgressDict.Keys) {
+        foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
             $info = $global:JobManager_ProgressDict[$jId]
             if ($info.type -eq "sys") {
                 Write-BotLog "[$jId] SYS Progress: $($info.pct)% - $($info.msg)" "INFO"
