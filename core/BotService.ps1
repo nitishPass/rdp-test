@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.1 - Poison Pill Protection)
+    RDP Manager - BotService (Phase 8.2 - Interactive UI & Vanish Protocol)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +16,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.1) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.2) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -27,37 +27,54 @@ $AdminUserId = $env:TELEGRAM_ADMIN_ID
 if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { Write-BotLog "Missing credentials!"; exit 1 }
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
 $global:Offset = 0; $JobCounter = 1
-$global:DashboardMessageId = $null; $global:DashboardLastUpdate = [DateTime]::MinValue
 $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
+$global:LastConsolePrint = Get-Date
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
 Initialize-JobManager
 
-# [FIX 1] BOOT FLUSH: Clear the Telegram queue so old offline commands don't trigger a suicide loop!
+# [NEW] VANISH PROTOCOL: Delete all previous messages from the old workflow
+$HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
+$global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
+
+if ($global:MsgHistory.Count -gt 0) {
+    Write-BotLog "Executing Vanish Protocol: Deleting $($global:MsgHistory.Count) previous messages..." "INFO"
+    foreach ($mId in $global:MsgHistory) {
+        Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$mId} -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+$global:MsgHistory = @()
+$global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
+
+# Boot Flush
 try {
     $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue
     if ($flush.ok -and $flush.result.Count -gt 0) {
         $global:Offset = $flush.result[-1].update_id + 1
         Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null
-        Write-BotLog "Cleared $($flush.result.Count) old offline messages from Telegram queue." "INFO"
     }
 } catch { }
 
 function Send-TelegramMessage {
-    param ([string]$Text, [string]$ParseMode = "HTML")
+    param ([string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
         $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
+        if ($ReplyMarkup) { $payload["reply_markup"] = ($ReplyMarkup | ConvertTo-Json -Depth 5 -Compress) }
         $resp = Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $payload
-        return $resp.result.message_id
+        $mId = $resp.result.message_id
+        $global:MsgHistory += $mId
+        $global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
+        return $mId
     } catch { }
 }
 
 function Edit-TelegramMessage {
-    param ([string]$MessageId, [string]$Text, [string]$ParseMode = "HTML")
+    param ([string]$MessageId, [string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
     try {
         $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
+        if ($ReplyMarkup) { $payload["reply_markup"] = ($ReplyMarkup | ConvertTo-Json -Depth 5 -Compress) }
         Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $payload | Out-Null
     } catch { }
 }
@@ -99,6 +116,17 @@ function Format-ETA([double]$Speed, [double]$Remaining) {
     return "{0}s" -f $ts.Seconds
 }
 
+function Generate-JobUI {
+    param([string]$jId, $info)
+    $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+    $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+    $progBar = Get-ProgressBar -Percent $pct
+    $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
+    $spdStr = Format-Bytes -Bytes $speed
+    $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+    return "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
+}
+
 function Route-Command {
     param ([string]$CommandText)
     $cleanCommand = $CommandText.Trim() -replace '@\S+', ''
@@ -109,22 +137,11 @@ function Route-Command {
     if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
             "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/stop - Terminate workflow`n/rdp - Connection Info" }
-            "/cancel" {
-                $target = $args.ToUpper().Trim()
-                if ($global:JobManager_Jobs.ContainsKey($target)) {
-                    $global:JobManager_CancelDict[$target] = $true
-                    Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
-                }
-            }
             "/stop" {
                 Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
-                
-                # [FIX 2] CLEAN EXIT: Tell Telegram we read this before we die, so the next bot doesn't read it!
                 try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -ErrorAction SilentlyContinue | Out-Null } catch {}
-                
                 exit 0
             }
             "/rdp" {
@@ -132,13 +149,24 @@ function Route-Command {
                 $tsIp = if (Test-Path $tsPath) { (& $tsPath ip -4 2>$null).Trim() } else { $null }
                 
                 if ($tsIp) {
-                    $msg = "🖥️ <b>RDP CONNECTION INFO</b>`n━━━━━━━━━━━━━━━━━━━━`n"
+                    $msg = "🖥️ <b>RDP CONNECTION INFO (Self-Destruct in 60s)</b>`n━━━━━━━━━━━━━━━━━━━━`n"
                     $msg += "🟢 <b>Status:</b> SECURE VPN ONLINE`n"
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Use Microsoft Remote Desktop to connect!</i>"
-                    Send-TelegramMessage $msg
+                    $msg += "<i>Drive Z:\ is mounted to your CloudVault!</i>"
+                    
+                    $mId = Send-TelegramMessage $msg
+                    
+                    # [NEW] Auto-destruct thread!
+                    if ($mId) {
+                        $sb = {
+                            param($mId, $cId, $botToken)
+                            Start-Sleep -Seconds 60
+                            Invoke-RestMethod -Uri "https://api.telegram.org/bot$botToken/deleteMessage" -Method Post -Body @{chat_id=$cId; message_id=$mId} -ErrorAction SilentlyContinue
+                        }
+                        Start-ThreadJob -ScriptBlock $sb -ArgumentList @($mId, $AllowedChatId, $BotToken) | Out-Null
+                    }
                 } else {
                     Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
                 }
@@ -154,20 +182,24 @@ function Route-Command {
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellActive`" }"
                     $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
                     if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
-                    $out = "📥 <b>ACTIVE DOWNLOADS</b>`n"
+                    
                     foreach ($d in $res.result) {
-                        $pct = if ([double]$d.totalLength -gt 0) { [math]::Round(([double]$d.completedLength / [double]$d.totalLength) * 100, 1) } else { 0 }
-                        $spd = Format-Bytes ([double]$d.downloadSpeed)
-                        $out += "🔹 GID: <code>$($d.gid)</code> | $pct% | $spd/s`n"
+                        $info = $d; $info | Add-Member -MemberType NoteProperty -Name "jobType" -Value "download" -Force
+                        $jId = "GID-$($d.gid)"
+                        $global:JobManager_ProgressDict[$jId] = $info
+                        
+                        $markup = @{ inline_keyboard = @( @( 
+                            @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                            @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                        ) ) }
+                        
+                        Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup | Out-Null
                     }
-                    Send-TelegramMessage $out
                 } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
             }
             "/status" {
-                $msgId = Send-TelegramMessage (Get-LiveDashboardText)
-                if ($msgId) {
-                    $global:DashboardMessageId = $msgId; $global:DashboardLastUpdate = Get-Date
-                }
+                $markup = @{ inline_keyboard = @( @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                Send-TelegramMessage (Get-LiveDashboardText) -ReplyMarkup $markup | Out-Null
             }
         }
         return
@@ -176,21 +208,16 @@ function Route-Command {
     if ($Config.telegram.commands.jobs -contains $cmd) {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
-        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd"
+        
+        $markup = @{ inline_keyboard = @( @( 
+            @{ text="🔄 Refresh"; callback_data="refresh_$jobId" },
+            @{ text="🛑 Cancel"; callback_data="cancel_$jobId" }
+        ) ) }
+        
+        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd" -ReplyMarkup $markup
         if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date; LastConsoleMsg = "" } }
         
         switch ($cmd) {
-            "/diagnostics" {
-                $sb = {
-                    param($WsPath, $JobStats)
-                    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-                    $ram = [math]::Round(((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize - (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory) / (Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize * 100, 1)
-                    $drvLet = if ($WsPath) { $WsPath.Substring(0,1) } else { "C" }
-                    $freeGb = [math]::Round((Get-PSDrive -Name $drvLet).Free / 1GB, 1)
-                    return "🚀 <b>DIAGNOSTICS</b>`n━━━━━━━━━━━━━━━━━━━━`n🖥️ <b>SYSTEM</b>`nCPU: $cpu% | RAM: $ram%`n`n💾 <b>WORKSPACE (${drvLet}:)</b>`nFree Space: $freeGb GB`n`n🟢 <b>ALL SYSTEMS HEALTHY</b>"
-                }
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, (Get-JobManagerStats))
-            }
             "/download" {
                 $sb = {
                     param($JobId, $Url, $RpcPort, $CancelDict, $ProgressDict)
@@ -211,7 +238,7 @@ function Route-Command {
                         if ($CancelDict.ContainsKey($JobId)) {
                             $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                             Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
-                            throw "Cancelled by user (Data preserved)."
+                            throw "Cancelled by user."
                         }
                         $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellStatus`", `"params`": [`"$gid`"] }"
                         $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
@@ -251,8 +278,7 @@ function Route-Command {
     }
 }
 
-if ($env:IS_RELAY -eq 'true') { Send-TelegramMessage "🔄 <b>RELAY RESTORE COMPLETE</b>`nNew GitHub runner successfully took over the workspace." }
-else { Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." }
+Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." | Out-Null
 
 while (-not $global:ShutdownRequested) {
     try {
@@ -260,6 +286,55 @@ while (-not $global:ShutdownRequested) {
         if ($updates.ok -and $updates.result.Count -gt 0) {
             foreach ($update in $updates.result) {
                 $global:Offset = $update.update_id + 1
+                
+                # [NEW] Handle Inline Buttons (Refresh / Cancel)
+                if ($update.callback_query) {
+                    $cb = $update.callback_query
+                    $cbData = $cb.data
+                    $mId = $cb.message.message_id
+                    
+                    Invoke-RestMethod -Uri "$ApiUrl/answerCallbackQuery" -Method Post -Body @{callback_query_id=$cb.id} -ErrorAction SilentlyContinue | Out-Null
+                    
+                    if ($cbData -eq "refresh_dash") {
+                        $markup = @{ inline_keyboard = @( @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                        Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ReplyMarkup $markup
+                    }
+                    elseif ($cbData -match "^refresh_(.+)") {
+                        $jId = $matches[1]
+                        if ($global:JobManager_ProgressDict.ContainsKey($jId)) {
+                            $info = $global:JobManager_ProgressDict[$jId]
+                            $markup = @{ inline_keyboard = @( @( 
+                                @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                                @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                            ) ) }
+                            
+                            if ($info.type -eq "sys") {
+                                $pct = $info.pct
+                                $progBar = Get-ProgressBar -Percent $pct
+                                $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                                Edit-TelegramMessage -MessageId $mId -Text $text -ReplyMarkup $markup
+                            } else {
+                                Edit-TelegramMessage -MessageId $mId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
+                            }
+                        }
+                    }
+                    elseif ($cbData -match "^cancel_(.+)") {
+                        $jId = $matches[1]
+                        $global:JobManager_CancelDict[$jId] = $true
+                        
+                        # Also handle bare aria2 GID cancellations directly from the /downloads menu
+                        if ($jId -match "^GID-(.+)") {
+                            $gid = $matches[1]
+                            $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
+                            $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
+                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
+                        }
+                        
+                        Edit-TelegramMessage -MessageId $mId -Text "🛑 Cancellation requested for <code>$jId</code>..."
+                    }
+                    continue
+                }
+
                 $msg = $update.message
                 if (-not $msg.text) { continue }
                 if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
@@ -284,53 +359,20 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    $keys = @($global:JobManager_ProgressDict.Keys)
-    foreach ($jId in $keys) {
-        if ($global:JobMessageMap.ContainsKey($jId)) {
-            $msgData = $global:JobMessageMap[$jId]
-            
-            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(1)) {
-                $info = $global:JobManager_ProgressDict[$jId]
-                if ($info) {
-                    if ($info.type -eq "sys") {
-                        if ($msgData.LastConsoleMsg -ne $info.msg) {
-                            Write-BotLog "[$jId] Progress: $($info.pct)% - $($info.msg)" "INFO"
-                            $msgData.LastConsoleMsg = $info.msg
-                        }
-                        
-                        $pct = $info.pct
-                        $progBar = Get-ProgressBar -Percent $pct
-                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
-                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
-                        $msgData.LastUpdate = Get-Date
-                        
-                    } elseif ($info.jobType -eq "download") {
-                        $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
-                        $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
-                        $progBar = Get-ProgressBar -Percent $pct
-                        $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
-                        $spdStr = Format-Bytes -Bytes $speed
-                        $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
-                        
-                        $consoleMsg = "Download: $pct% | Speed: $spdStr/s"
-                        if ($msgData.LastConsoleMsg -ne $consoleMsg) {
-                            Write-BotLog "[$jId] $consoleMsg" "INFO"
-                            $msgData.LastConsoleMsg = $consoleMsg
-                        }
-                        
-                        $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
-                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
-                        $msgData.LastUpdate = Get-Date
-                    }
-                }
+    # [NEW] Push progress updates silently to GitHub Actions Console every 10 seconds (no Telegram spam)
+    if ((Get-Date) -ge $global:LastConsolePrint.AddSeconds(10)) {
+        foreach ($jId in $global:JobManager_ProgressDict.Keys) {
+            $info = $global:JobManager_ProgressDict[$jId]
+            if ($info.type -eq "sys") {
+                Write-BotLog "[$jId] SYS Progress: $($info.pct)% - $($info.msg)" "INFO"
+            } elseif ($info.jobType -eq "download") {
+                $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+                $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+                $spdStr = Format-Bytes -Bytes $speed
+                Write-BotLog "[$jId] DL Progress: $pct% | Speed: $spdStr/s" "INFO"
             }
         }
-    }
-
-    if ($global:DashboardMessageId -and ((Get-Date) -ge $global:DashboardLastUpdate.AddSeconds($Config.telegram.dashboardRefreshSeconds))) {
-        $global:DashboardLastUpdate = Get-Date
-        $dashText = Get-LiveDashboardText
-        Edit-TelegramMessage -MessageId $global:DashboardMessageId -Text $dashText
+        $global:LastConsolePrint = Get-Date
     }
 
     if ((Get-Date) -ge $StartTime.AddMinutes($Config.relay.autoRelayMinutes)) {
