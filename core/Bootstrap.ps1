@@ -1,8 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.0 - RDP & Tailscale Integration)
-.DESCRIPTION
-    Allocates workspace, installs rclone, restores cloud state, initializes Tailscale, and starts aria2.
+    RDP Manager - Bootstrap (Phase 8.2 - Drive Mount & UI Update)
 #>
 
 [CmdletBinding()]
@@ -52,6 +50,16 @@ try {
         & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
+        
+        # [NEW] Install WinFsp and Mount Cloud Drive to Z:\
+        Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
+        choco install winfsp -y --no-progress | Out-Null
+        
+        Write-Log "Mounting CloudVault as Local Drive Z:\..." "INFO"
+        $mountArgs = @("mount", "$($Config.relay.cloudDriveName):", "Z:", "--vfs-cache-mode", "writes", "--poll-interval", "10s")
+        Start-Process -FilePath "$workspacePath\rclone.exe" -ArgumentList $mountArgs -WindowStyle Hidden
+        Write-Log "Google Drive is now accessible at Z:\ inside RDP!" "SUCCESS"
+
     } else {
         Write-Log "RCLONE_CONFIG_DATA not found. Skipping cloud sync." "WARN"
     }
@@ -77,9 +85,14 @@ try {
         $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
         if (Test-Path $tsPath) {
             Write-Log "Authenticating Tailscale network..." "INFO"
-            # Appends the GitHub Run ID to ensure a unique hostname on your VPN network!
             & $tsPath up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="RDP-Worker-$env:GITHUB_RUN_ID" --reset
+            
+            # [NEW] Print Tailscale IP directly to GitHub Console
+            $tsIp = (& $tsPath ip -4 2>$null).Trim()
             Write-Log "Tailscale connected successfully!" "SUCCESS"
+            Write-Log "==========================================" "SUCCESS"
+            Write-Log "🖥️ RDP IP ADDRESS: $tsIp" "SUCCESS"
+            Write-Log "==========================================" "SUCCESS"
         } else {
             Write-Log "Tailscale executable not found." "ERROR"
         }
