@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.3 - Session Isolation Fix)
+    RDP Manager - Bootstrap (Phase 8.4 - Universal Config & VBS Mount)
 #>
 
 [CmdletBinding()]
@@ -16,7 +16,6 @@ function Write-Log {
 try {
     $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
-    # 1. Dynamic Storage Detection
     $volumes = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
     $bestDrive = $volumes | Sort-Object Free -Descending | Select-Object -First 1
     $workspacePath = Join-Path $bestDrive.Root $Config.storage.workspaceRootName
@@ -27,12 +26,12 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $downloadsPath
     Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
 
-    # 2. Rclone Installation & Config
+    # [FIX] Save config directly to the Workspace so all RDP users can read it!
+    $rcloneConf = Join-Path $workspacePath "rclone.conf"
+
     if ($env:RCLONE_CONFIG_DATA) {
         Write-Log "Installing rclone & injecting config..." "INFO"
-        $rcloneConfDir = "$env:APPDATA\rclone"
-        New-Item -ItemType Directory -Force -Path $rcloneConfDir | Out-Null
-        Set-Content -Path "$rcloneConfDir\rclone.conf" -Value $env:RCLONE_CONFIG_DATA
+        Set-Content -Path $rcloneConf -Value $env:RCLONE_CONFIG_DATA
         
         $rcloneZip = "$env:TEMP\rclone.zip"
         Invoke-WebRequest -Uri "https://downloads.rclone.org/v1.65.2/rclone-v1.65.2-windows-amd64.zip" -OutFile $rcloneZip
@@ -43,31 +42,42 @@ try {
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
         $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
         
-        & "$workspacePath\rclone.exe" mkdir $cloudTarget
+        & "$workspacePath\rclone.exe" mkdir $cloudTarget --config $rcloneConf
         
         Write-Log "Downloading workspace from Google Drive (This will take a few minutes)..." "WARN"
-        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
+        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--config", $rcloneConf, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
         & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
         
-        # [FIX 3] Generate the Mount .bat directly on the Desktop to bypass Session Isolation!
         Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
         choco install winfsp -y --no-progress | Out-Null
         
         $desktopPath = "C:\Users\Public\Desktop"
         if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
-        $batPath = "$desktopPath\Mount_CloudVault.bat"
-        $batContent = "@echo off`nstart `"CloudVault`" `"$workspacePath\rclone.exe`" mount $($Config.relay.cloudDriveName): Z: --vfs-cache-mode writes --poll-interval 10s"
-        Set-Content -Path $batPath -Value $batContent
         
-        Write-Log "Double-click 'Mount_CloudVault.bat' on the RDP Desktop to map Z: drive!" "SUCCESS"
+        # [FIX] Generate the invisible VBS mount script using your provided architecture
+        $vbsMountPath = "$desktopPath\Mount_CloudVault.vbs"
+        $vbsMountContent = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """$workspacePath\rclone.exe"" mount $($Config.relay.cloudDriveName): Z: --config ""$rcloneConf"" --vfs-cache-mode writes --poll-interval 10s", 0, False
+"@
+        Set-Content -Path $vbsMountPath -Value $vbsMountContent
+
+        # [FIX] Generate the Kill script based on unmount_all_megadrive.vbs
+        $vbsUnmountPath = "$desktopPath\Unmount_CloudVault.vbs"
+        $vbsUnmountContent = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "taskkill /IM rclone.exe /F", 0, False
+"@
+        Set-Content -Path $vbsUnmountPath -Value $vbsUnmountContent
+        
+        Write-Log "Double-click 'Mount_CloudVault.vbs' on the RDP Desktop to map Z: drive invisibly!" "SUCCESS"
 
     } else {
         Write-Log "RCLONE_CONFIG_DATA not found. Skipping cloud sync." "WARN"
     }
 
-    # 3. RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
     Enable-NetFirewallRule -DisplayGroup $Config.rdp.firewallGroupName -ErrorAction SilentlyContinue | Out-Null
@@ -81,7 +91,6 @@ try {
         }
     }
 
-    # 4. Tailscale VPN Installation & Authentication
     if ($env:TAILSCALE_AUTH_KEY) {
         Write-Log "Installing Tailscale VPN via Chocolatey..." "INFO"
         choco install tailscale -y --no-progress | Out-Null
@@ -102,7 +111,6 @@ try {
         Write-Log "TAILSCALE_AUTH_KEY not found. Skipping VPN setup." "WARN"
     }
 
-    # 5. Start aria2c RPC Daemon (With Session Memory)
     $aria2Path = Join-Path $workspacePath "aria2"
     if (-not (Test-Path $aria2Path)) {
         New-Item -ItemType Directory -Path $aria2Path | Out-Null
@@ -119,7 +127,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 8.3 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 8.4 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
