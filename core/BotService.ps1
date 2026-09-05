@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.6 - Cloud-Native UI)
+    RDP Manager - BotService (Phase 8.7 - The CRLF & Hybrid UI Fix)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -8,21 +8,22 @@ $StartTime = Get-Date
 $WorkspacePath = $env:WORKSPACE_ROOT
 $LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else { "C:\Users\Public\Desktop\bot_emergency.log" }
 
+# [FIX 1] Aggressively Trim all invisible CRLF/Newline characters from the tokens!
+$BotToken = if ($env:TELEGRAM_BOT_TOKEN) { $env:TELEGRAM_BOT_TOKEN.Trim() } else { "" }
+$AllowedChatId = if ($env:TELEGRAM_CHAT_ID) { $env:TELEGRAM_CHAT_ID.Trim() } else { "" }
+$AdminUserId = if ($env:TELEGRAM_ADMIN_ID) { $env:TELEGRAM_ADMIN_ID.Trim() } else { "" }
+
 function Write-BotLog {
     param ([string]$Message, [string]$Level = 'INFO')
-    if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
-    if ($env:TAILSCALE_AUTH_KEY) { $Message = $Message.Replace($env:TAILSCALE_AUTH_KEY, "[REDACTED_TS_KEY]") }
+    if ($BotToken) { $Message = $Message.Replace($BotToken, "[REDACTED_TOKEN]") }
+    if ($env:TAILSCALE_AUTH_KEY) { $Message = $Message.Replace($env:TAILSCALE_AUTH_KEY.Trim(), "[REDACTED_TS_KEY]") }
     $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.6) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.7) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-
-$BotToken = $env:TELEGRAM_BOT_TOKEN
-$AllowedChatId = $env:TELEGRAM_CHAT_ID
-$AdminUserId = $env:TELEGRAM_ADMIN_ID
 
 if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { Write-BotLog "Missing credentials!"; exit 1 }
 $ApiUrl = "https://api.telegram.org/bot$BotToken"
@@ -30,7 +31,6 @@ $global:Offset = 0; $JobCounter = 1
 $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
 $global:LastConsolePrint = Get-Date
-
 $global:DeleteQueue = @{} 
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
@@ -38,7 +38,10 @@ $global:DeleteQueue = @{}
 Initialize-JobManager
 
 $HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
-$global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
+try {
+    $global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
+    if ($null -eq $global:MsgHistory) { $global:MsgHistory = @() }
+} catch { $global:MsgHistory = @() }
 
 if ($global:MsgHistory.Count -gt 0) {
     Write-BotLog "Executing Vanish Protocol: Deleting $($global:MsgHistory.Count) previous messages..." "INFO"
@@ -47,7 +50,7 @@ if ($global:MsgHistory.Count -gt 0) {
     }
 }
 $global:MsgHistory = @()
-$global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
+ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
 
 try {
     $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue
@@ -68,7 +71,7 @@ function Send-TelegramMessage {
         
         $mId = $resp.result.message_id
         $global:MsgHistory += $mId
-        $global:MsgHistory | ConvertTo-Json -Compress | Out-File $HistoryFile -Encoding utf8
+        ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
         return $mId
     } catch { Write-BotLog "Telegram Send Error: $($_.Exception.Message)" "ERROR" }
 }
@@ -176,7 +179,7 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Double-click 'mount.vbs' on the desktop to launch your drives!</i>"
+                    $msg += "<i>Double-click 'mount.vbs' on the desktop to access Z:!</i>"
                     
                     $mId = Send-TelegramMessage $msg
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
@@ -352,7 +355,10 @@ while (-not $global:ShutdownRequested) {
                 Route-Command -Command $msg.text
             }
         }
-    } catch { }
+    } catch { 
+        Write-BotLog "API Polling Error: $($_.Exception.Message)" "WARN"
+        Start-Sleep -Seconds 2
+    }
 
     $jobEvents = Invoke-JobManagerTick
     foreach ($event in $jobEvents) {
@@ -367,6 +373,32 @@ while (-not $global:ShutdownRequested) {
             }
             elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" }
             $global:JobMessageMap.Remove($event.JobId)
+        }
+    }
+
+    # [FIX 2] HYBRID UI: Auto-update the UI every 5 seconds so you aren't flying blind!
+    foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
+        if ($global:JobMessageMap.ContainsKey($jId)) {
+            $msgData = $global:JobMessageMap[$jId]
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(5)) {
+                $info = $global:JobManager_ProgressDict[$jId]
+                if ($info) {
+                    $markup = @{ inline_keyboard = @( ,( 
+                        @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                        @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                    ) ) }
+                    
+                    if ($info.type -eq "sys") {
+                        $pct = $info.pct
+                        $progBar = Get-ProgressBar -Percent $pct
+                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text -ReplyMarkup $markup
+                    } else {
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
+                    }
+                    $msgData.LastUpdate = Get-Date
+                }
+            }
         }
     }
 
