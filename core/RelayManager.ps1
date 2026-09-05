@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 8.4 - Universal Config)
+    RDP Manager - RelayManager (Phase 8.6 - System Vault Protection)
 #>
 
 function Sync-CloudWorkspace {
@@ -28,17 +28,18 @@ function Sync-CloudWorkspace {
     if (-not (Test-Path $rclone)) { throw "rclone is not installed or configured." }
     
     $cloudTarget = "${CloudName}:${RootName}"
-    $confPath = Join-Path $WsPath "rclone.conf" # [FIX] Pointed to the new Workspace config!
+    $confPath = "C:\Users\Public\rclone.conf"
     $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
     Set-Status "Pushing files to CloudVault (Gigabit Mode Active)..." 50
     
+    # [FIX] --exclude "System/**" ensures your master scripts/secrets in Google Drive are NEVER overwritten!
     $rcloneArgs = @(
         "copy", $WsPath, $cloudTarget, 
         "--config", $confPath, 
         "--exclude", "State/bot.log", 
         "--exclude", "State/rclone_sync.log", 
-        "--exclude", "rclone.conf",
+        "--exclude", "System/**",
         "--transfers", "8", 
         "--checkers", "8",
         "--drive-chunk-size", "512M",
