@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 9.0 - Manual UI & Stability)
+    RDP Manager - BotService (Phase 9.1 - Restored Hybrid UI)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -20,7 +20,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 9.0) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 9.1) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -184,7 +184,6 @@ function Route-Command {
                     $msg += "<i>Double-click 'mount.vbs' on the desktop to access Z:!</i>"
                     
                     $mId = Send-TelegramMessage $msg
-                    # [NEW] 60-Second Auto-Destruct Timer
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
                 } else {
                     Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
@@ -306,7 +305,6 @@ while (-not $global:ShutdownRequested) {
             foreach ($update in $updates.result) {
                 $global:Offset = $update.update_id + 1
                 
-                # INLINE BUTTON LOGIC (Manual UI Refreshing)
                 if ($update.callback_query) {
                     $cb = $update.callback_query
                     $cbData = $cb.data
@@ -380,7 +378,32 @@ while (-not $global:ShutdownRequested) {
         }
     }
 
-    # Process Message Auto-Delete Queue (e.g., /rdp credentials)
+    # [FIX 3] Restored 5-second automatic UI updating while preserving interactive buttons
+    foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
+        if ($global:JobMessageMap.ContainsKey($jId)) {
+            $msgData = $global:JobMessageMap[$jId]
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(5)) {
+                $info = $global:JobManager_ProgressDict[$jId]
+                if ($info) {
+                    $markup = @{ inline_keyboard = @( ,( 
+                        @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                        @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                    ) ) }
+                    
+                    if ($info.type -eq "sys") {
+                        $pct = $info.pct
+                        $progBar = Get-ProgressBar -Percent $pct
+                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text -ReplyMarkup $markup
+                    } else {
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
+                    }
+                    $msgData.LastUpdate = Get-Date
+                }
+            }
+        }
+    }
+
     $now = Get-Date
     foreach ($dId in @($global:DeleteQueue.Keys)) {
         if ($now -ge $global:DeleteQueue[$dId]) {
