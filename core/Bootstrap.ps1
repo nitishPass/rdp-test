@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 10.5 - Parallel Admin Terminals & Auto-Mount)
+    RDP Manager - Bootstrap (Phase 10.6 - Ironclad Admin Startup)
 #>
 
 [CmdletBinding()]
@@ -100,22 +100,23 @@ try {
     }
 
     # ====================================================================
-    # PARALLEL POST-LOGIN INJECTION (Debloat & Software)
+    # IRONCLAD POST-LOGIN INJECTION (Debloat & Software)
     # ====================================================================
     Write-Log "Injecting Parallel Admin Setup Scripts..." "INFO"
     
-    # 1. Force Silent UAC Elevation so terminals pop up without asking for permission
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -ErrorAction SilentlyContinue
-
+    # 1. Prepare Paths
     $desktopPath = "C:\Users\Public\Desktop"
     if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
     
-    $startupPath = "C:\Users\Default\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+    # [FIX] Use the Global All-Users Startup Folder so it triggers for nitish1201
+    $startupPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
     if (-not (Test-Path $startupPath)) { New-Item -ItemType Directory -Path $startupPath -Force | Out-Null }
 
     $debloatPs1 = "$desktopPath\01_GreatDebloat.ps1"
     $installPs1 = "$desktopPath\02_SoftwareInstaller.ps1"
-    $startupBat = "$startupPath\00_Init_RDP.bat"
+    
+    # We use VBS to force the execution as an Administrator silently
+    $startupVbs = "$startupPath\00_Init_RDP.vbs"
 
     # RED TERMINAL: The Great Debloat
     $debloatContent = @'
@@ -172,7 +173,8 @@ if (Test-Path $softwareFile) {
     if ($toInstall.Count -gt 0) {
         $pkgString = $toInstall -join " "
         Write-Host "[+] Installing: $pkgString`n" -ForegroundColor Cyan
-        Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y" -Wait -NoNewWindow
+        # [FIX] Added --confirm and --force to bypass the Y/N prompt
+        Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --confirm --force" -Wait -NoNewWindow
         Write-Host "`n[+] Software stack deployed!" -ForegroundColor Green
     } else {
         Write-Host "[-] No enabled packages found." -ForegroundColor DarkGray
@@ -185,12 +187,16 @@ Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
     $installContent = $installContent -replace '\{WORKSPACE_PATH\}', $workspacePath
     Set-Content -Path $installPs1 -Value $installContent
 
-    # MASTER STARTUP BATCH (Launches both simultaneously as Admin, then deletes itself)
-    $batContent = "@echo off`n"
-    $batContent += "start powershell.exe -WindowStyle Hidden -Command `"Start-Process powershell -ArgumentList '-NoExit -ExecutionPolicy Bypass -File ''$debloatPs1''' -Verb RunAs`"`n"
-    $batContent += "start powershell.exe -WindowStyle Hidden -Command `"Start-Process powershell -ArgumentList '-NoExit -ExecutionPolicy Bypass -File ''$installPs1''' -Verb RunAs`"`n"
-    $batContent += "(goto) 2>nul & del `"%~f0`""
-    Set-Content -Path $startupBat -Value $batContent
+    # [FIX] VBScript to execute the PowerShell scripts as Administrator on Startup
+    $vbsContent = "Set UAC = CreateObject(`"Shell.Application`")`n"
+    $vbsContent += "UAC.ShellExecute `"powershell.exe`", `"-NoProfile -ExecutionPolicy Bypass -File \""$debloatPs1\""`", `"`", `"runas`", 1`n"
+    $vbsContent += "UAC.ShellExecute `"powershell.exe`", `"-NoProfile -ExecutionPolicy Bypass -File \""$installPs1\""`", `"`", `"runas`", 1`n"
+    
+    # Self-Destruct the VBS so it doesn't run again
+    $vbsContent += "Set objFSO = CreateObject(`"Scripting.FileSystemObject`")`n"
+    $vbsContent += "strScript = Wscript.ScriptFullName`n"
+    $vbsContent += "objFSO.DeleteFile(strScript)`n"
+    Set-Content -Path $startupVbs -Value $vbsContent
 
     # ====================================================================
     # ADMIN WRAPPERS FOR VBS SCRIPTS (mount/unmount)
@@ -202,20 +208,24 @@ Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
         
         # Desktop Admin Shortcut
-        $mountBat = "$desktopPath\Mount_CloudVault_Admin.bat"
-        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\mount.vbs`"' -Verb RunAs`"" | Set-Content -Path $mountBat
+        $mountVbsWrapper = "$desktopPath\Mount_CloudVault.vbs"
+        $mountVbsContent = "Set UAC = CreateObject(`"Shell.Application`")`n"
+        $mountVbsContent += "UAC.ShellExecute `"wscript.exe`", `"\""C:\Users\Public\Desktop\mount.vbs\""`", `"`", `"runas`", 0`n"
+        Set-Content -Path $mountVbsWrapper -Value $mountVbsContent
         
         # Auto-Mount Admin Script in Startup!
-        $autoMount = "$startupPath\01_AutoMount.bat"
-        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\mount.vbs`"' -Verb RunAs`"" | Set-Content -Path $autoMount
+        $autoMount = "$startupPath\01_AutoMount.vbs"
+        Copy-Item -Path $mountVbsWrapper -Destination $autoMount -Force
     }
     
     if (Test-Path $unmountVbs) {
         Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
         
         # Desktop Admin Shortcut
-        $unmountBat = "$desktopPath\Unmount_CloudVault_Admin.bat"
-        "@echo off`nstart powershell.exe -WindowStyle Hidden -Command `"Start-Process wscript.exe -ArgumentList '`"C:\Users\Public\Desktop\unmount.vbs`"' -Verb RunAs`"" | Set-Content -Path $unmountBat
+        $unmountVbsWrapper = "$desktopPath\Unmount_CloudVault.vbs"
+        $unmountVbsContent = "Set UAC = CreateObject(`"Shell.Application`")`n"
+        $unmountVbsContent += "UAC.ShellExecute `"wscript.exe`", `"\""C:\Users\Public\Desktop\unmount.vbs\""`", `"`", `"runas`", 0`n"
+        Set-Content -Path $unmountVbsWrapper -Value $unmountVbsContent
     }
 
     # RDP Initialization
@@ -259,7 +269,7 @@ Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 10.5 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 10.6 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
