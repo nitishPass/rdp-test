@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 10.7 - Bulletproof VBScript Generation)
+    RDP Manager - Bootstrap (Phase 10.8 - Auto-Closing Terminals & Clean Auto-Mount)
 #>
 
 [CmdletBinding()]
@@ -100,7 +100,7 @@ try {
     }
 
     # ====================================================================
-    # IRONCLAD POST-LOGIN INJECTION (Debloat & Software)
+    # POST-LOGIN INJECTION (Self-Cleaning Terminals)
     # ====================================================================
     Write-Log "Injecting Parallel Admin Setup Scripts..." "INFO"
     
@@ -143,7 +143,11 @@ if (Test-Path $softwareFile) {
 } else {
     Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
 }
-Write-Host "`nYou can safely close this terminal." -ForegroundColor White
+
+Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White
+Start-Sleep -Seconds 5
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+Stop-Process -Id $PID
 '@
     $debloatContent = $debloatContent -replace '\{WORKSPACE_PATH\}', $workspacePath
     Set-Content -Path $debloatPs1 -Value $debloatContent
@@ -179,12 +183,16 @@ if (Test-Path $softwareFile) {
 } else {
     Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
 }
-Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
+
+Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor Cyan
+Start-Sleep -Seconds 5
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+Stop-Process -Id $PID
 '@
     $installContent = $installContent -replace '\{WORKSPACE_PATH\}', $workspacePath
     Set-Content -Path $installPs1 -Value $installContent
 
-    # [FIX] Bulletproof VBS string creation using Chr(34) to avoid nested quote errors!
+    # Master VBS Launcher (Triggers both silently on boot)
     $vbsContent = "Set UAC = CreateObject(""Shell.Application"")`r`n"
     $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$debloatPs1"" & Chr(34), """", ""runas"", 1`r`n"
     $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$installPs1"" & Chr(34), """", ""runas"", 1`r`n"
@@ -194,30 +202,23 @@ Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
     Set-Content -Path $startupVbs -Value $vbsContent
 
     # ====================================================================
-    # ADMIN WRAPPERS FOR VBS SCRIPTS (mount/unmount)
+    # NATIVE DESKTOP MOUNT SCRIPTS (NO ADMIN WRAPPER)
     # ====================================================================
     $mountVbs = Join-Path $workspacePath "System\mount.vbs"
     $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
     
     if (Test-Path $mountVbs) {
+        # 1. Clean Desktop Mount
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
         
-        $mountVbsWrapper = "$desktopPath\Mount_CloudVault.vbs"
-        $mountVbsContent = "Set UAC = CreateObject(""Shell.Application"")`r`n"
-        $mountVbsContent += "UAC.ShellExecute ""wscript.exe"", Chr(34) & ""C:\Users\Public\Desktop\mount.vbs"" & Chr(34), """", ""runas"", 0`r`n"
-        Set-Content -Path $mountVbsWrapper -Value $mountVbsContent
-        
-        $autoMount = "$startupPath\01_AutoMount.vbs"
-        Copy-Item -Path $mountVbsWrapper -Destination $autoMount -Force
+        # 2. Native Auto-Mount in Startup (Runs exactly as you tested it)
+        $autoMount = "$startupPath\mount.vbs"
+        Copy-Item -Path $mountVbs -Destination $autoMount -Force
     }
     
     if (Test-Path $unmountVbs) {
+        # 1. Clean Desktop Unmount
         Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
-        
-        $unmountVbsWrapper = "$desktopPath\Unmount_CloudVault.vbs"
-        $unmountVbsContent = "Set UAC = CreateObject(""Shell.Application"")`r`n"
-        $unmountVbsContent += "UAC.ShellExecute ""wscript.exe"", Chr(34) & ""C:\Users\Public\Desktop\unmount.vbs"" & Chr(34), """", ""runas"", 0`r`n"
-        Set-Content -Path $unmountVbsWrapper -Value $unmountVbsContent
     }
 
     # RDP Initialization
@@ -261,7 +262,7 @@ Write-Host "`nYou can safely close this terminal." -ForegroundColor Cyan
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 10.7 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 10.8 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
