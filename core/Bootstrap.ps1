@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 9.1 - OS Native VBS Integration)
+    RDP Manager - Bootstrap (Phase 9.3 - Auto-Mount & OS Native Integration)
 #>
 
 [CmdletBinding()]
@@ -32,8 +32,6 @@ try {
         Write-Log "Installing rclone & setting OS-Native Configs..." "INFO"
         Set-Content -Path $publicConf -Value $env:RCLONE_CONFIG_DATA
         
-        # [FIX 1] Inject Config into the Windows Default User Profile!
-        # When you log in, Windows copies this to your new profile natively.
         $defaultRcloneDir = "C:\Users\Default\AppData\Roaming\rclone"
         if (-not (Test-Path $defaultRcloneDir)) { New-Item -ItemType Directory -Path $defaultRcloneDir -Force | Out-Null }
         Set-Content -Path "$defaultRcloneDir\rclone.conf" -Value $env:RCLONE_CONFIG_DATA
@@ -43,8 +41,6 @@ try {
         Expand-Archive -Path $rcloneZip -DestinationPath "$env:TEMP\rclone_ext" -Force
         $rcloneExe = (Get-ChildItem -Path "$env:TEMP\rclone_ext" -Filter "rclone.exe" -Recurse).FullName
         Copy-Item $rcloneExe -Destination "$workspacePath\rclone.exe" -Force
-        
-        # [FIX 2] Copy Rclone directly to C:\Windows so your custom VBS files work instantly without paths!
         Copy-Item $rcloneExe -Destination "C:\Windows\rclone.exe" -Force
         
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
@@ -57,7 +53,6 @@ try {
         & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
-        
         Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
         choco install winfsp -y --no-progress | Out-Null
         
@@ -104,16 +99,24 @@ try {
         exit 1
     }
 
-    # Deploy user's custom VBS files to Desktop
+    # ====================================================================
+    # AUTO-MOUNT & DESKTOP SCRIPT DEPLOYMENT
+    # ====================================================================
     $desktopPath = "C:\Users\Public\Desktop"
     if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
+    
+    # [NEW] The Windows Global Startup Folder
+    $startupPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+    if (-not (Test-Path $startupPath)) { New-Item -ItemType Directory -Path $startupPath -Force | Out-Null }
     
     $mountVbs = Join-Path $workspacePath "System\mount.vbs"
     $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
     
     if (Test-Path $mountVbs) {
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
-        Write-Log "Deployed custom mount.vbs to Desktop." "SUCCESS"
+        # [NEW] Copy to Startup so it auto-executes on RDP Login!
+        Copy-Item -Path $mountVbs -Destination "$startupPath\mount.vbs" -Force
+        Write-Log "Deployed custom mount.vbs to Desktop and Auto-Startup." "SUCCESS"
     }
     if (Test-Path $unmountVbs) {
         Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
@@ -168,7 +171,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 9.1 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 9.3 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
