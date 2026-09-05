@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 7.1 - Full Log Sync & Killswitch)
+    RDP Manager - BotService (Phase 8.0 - RDP & Tailscale Integration)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -11,11 +11,12 @@ $LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else
 function Write-BotLog {
     param ([string]$Message, [string]$Level = 'INFO')
     if ($env:TELEGRAM_BOT_TOKEN) { $Message = $Message.Replace($env:TELEGRAM_BOT_TOKEN, "[REDACTED_TOKEN]") }
+    if ($env:TAILSCALE_AUTH_KEY) { $Message = $Message.Replace($env:TAILSCALE_AUTH_KEY, "[REDACTED_TS_KEY]") }
     $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 7.1) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.0) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -95,11 +96,11 @@ function Route-Command {
     $cmd = $parts[0].ToLower()
     $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
     
-    if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop") {
+    if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
             "/jobs" { Send-TelegramMessage (Get-ActiveJobsFormatted) }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/stop - Terminate workflow" }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/stop - Terminate workflow`n/rdp - Connection Info" }
             "/cancel" {
                 $target = $args.ToUpper().Trim()
                 if ($global:JobManager_Jobs.ContainsKey($target)) {
@@ -108,10 +109,25 @@ function Route-Command {
                 }
             }
             "/stop" {
-                # FIXED: Instant Workflow Killswitch
                 Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
                 exit 0
+            }
+            "/rdp" {
+                $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+                $tsIp = if (Test-Path $tsPath) { (& $tsPath ip -4 2>$null).Trim() } else { $null }
+                
+                if ($tsIp) {
+                    $msg = "🖥️ <b>RDP CONNECTION INFO</b>`n━━━━━━━━━━━━━━━━━━━━`n"
+                    $msg += "🟢 <b>Status:</b> SECURE VPN ONLINE`n"
+                    $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
+                    $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
+                    $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
+                    $msg += "<i>Use Microsoft Remote Desktop to connect!</i>"
+                    Send-TelegramMessage $msg
+                } else {
+                    Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
+                }
             }
             "/workspace" {
                 $drvLet = $WorkspacePath.Substring(0,1)
@@ -282,7 +298,6 @@ while (-not $global:ShutdownRequested) {
                         $spdStr = Format-Bytes -Bytes $speed
                         $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
                         
-                        # FIXED: Push Download updates to the GitHub Actions Console!
                         $consoleMsg = "Download: $pct% | Speed: $spdStr/s"
                         if ($msgData.LastConsoleMsg -ne $consoleMsg) {
                             Write-BotLog "[$jId] $consoleMsg" "INFO"
