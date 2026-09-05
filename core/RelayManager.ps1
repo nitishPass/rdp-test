@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.2)
+    RDP Manager - RelayManager (Phase 6.3)
 .DESCRIPTION
     Handles rclone cloud synchronization and GitHub API runner handoffs.
 #>
@@ -18,7 +18,6 @@ function Sync-CloudWorkspace {
         $body2 = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.saveSession`" }"
         Invoke-RestMethod -Uri $rpc -Method Post -Body $body2 -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
         
-        # Give Windows a few seconds to completely flush the I/O buffers to the D: drive
         Start-Sleep -Seconds 4
     } catch { }
 
@@ -27,12 +26,17 @@ function Sync-CloudWorkspace {
     
     $cloudTarget = "${CloudName}:${RootName}"
     $confPath = "$env:APPDATA\rclone\rclone.conf"
+    $logPath = Join-Path $WsPath "State\rclone_sync.log"
     
-    # 2. Push Local -> Cloud (Added --local-no-check-updated to ignore cache flushes)
-    $args = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --transfers 4 --retries 3 --local-no-check-updated"
-    $proc = Start-Process -FilePath $rclone -ArgumentList $args -Wait -PassThru -NoNewWindow
+    # 2. Push Local -> Cloud (FIXED DEADLOCK: Redirect streams to a log file instead of the invisible console)
+    $argsList = @("copy", "`"$WsPath`"", "`"$cloudTarget`"", "--config", "`"$confPath`"", "--exclude", "`"State/bot.log`"", "--exclude", "`"State/rclone_sync.log`"", "--transfers", "4", "--retries", "3", "--local-no-check-updated")
     
-    if ($proc.ExitCode -ne 0) { throw "Rclone sync failed with exit code $($proc.ExitCode)" }
+    $proc = Start-Process -FilePath $rclone -ArgumentList $argsList -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+    
+    if ($proc.ExitCode -ne 0) { 
+        $errLog = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
+        throw "Rclone sync failed (Code $($proc.ExitCode)). Details: $errLog" 
+    }
     return "✅ Workspace successfully synchronized to Cloud Vault."
 }
 
