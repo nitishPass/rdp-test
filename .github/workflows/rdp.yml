@@ -1,4 +1,4 @@
-name: RDP Workspace (Phase 8)
+name: RDP Workspace (Phase 8.6 - Cloud Native)
 
 on:
   workflow_dispatch:
@@ -14,15 +14,8 @@ jobs:
     timeout-minutes: 360
 
     env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # THE MASTER KEY: The only secret GitHub needs to unlock your CloudVault!
       RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
-      RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       IS_RELAY: ${{ github.event.inputs.is_relay }}
       GITHUB_REPO: ${{ github.repository }}
 
