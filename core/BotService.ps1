@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 6.4)
+    RDP Manager - BotService (Phase 6.5)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -166,8 +166,8 @@ function Route-Command {
                     $gid = $res.result
                     if (-not $gid) { throw "Failed to get GID from aria2." }
                     
-                    # CRITICAL FIX: Force unpause in case the download was loaded from a paused cloud state!
-                    $unpauseBody = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.unpause`", `"params`": [`"$gid`"] }"
+                    # FIXED: Wake up all downloads in case they were restored from a paused cloud state
+                    $unpauseBody = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.unpauseAll`" }"
                     Invoke-RestMethod -Uri $rpc -Method Post -Body $unpauseBody -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
                     
                     $completed = $false
@@ -183,10 +183,10 @@ function Route-Command {
                         $info = $statusRes.result
                         $ProgressDict[$JobId] = $info
                         
-                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed" -or $info.status -eq "paused") {
+                        # FIXED: Removed 'paused' from the kill-switch. Paused jobs just show PAUSED now.
+                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed") {
                             $completed = $true
                             if ($info.status -eq "error") { throw "Aria2 Error: $($info.errorCode)" }
-                            if ($info.status -eq "paused") { throw "Paused automatically for Workspace Relay." }
                         }
                     }
                     return "✅ Download successfully completed!"
