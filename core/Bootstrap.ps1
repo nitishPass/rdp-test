@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.6 - Cloud-Native Config Vault)
+    RDP Manager - Bootstrap (Phase 9.1 - OS Native VBS Integration)
 #>
 
 [CmdletBinding()]
@@ -26,35 +26,34 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $downloadsPath
     Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
 
-    # Set Universal Config Path so any user/VBS script can run rclone natively
     $publicConf = "C:\Users\Public\rclone.conf"
 
     if ($env:RCLONE_CONFIG_DATA) {
-        Write-Log "Installing rclone & setting Universal Config..." "INFO"
+        Write-Log "Installing rclone & setting OS-Native Configs..." "INFO"
         Set-Content -Path $publicConf -Value $env:RCLONE_CONFIG_DATA
-        [Environment]::SetEnvironmentVariable("RCLONE_CONFIG", $publicConf, "Machine")
-        $env:RCLONE_CONFIG = $publicConf
         
+        # [FIX 1] Inject Config into the Windows Default User Profile!
+        # When you log in, Windows copies this to your new profile natively.
+        $defaultRcloneDir = "C:\Users\Default\AppData\Roaming\rclone"
+        if (-not (Test-Path $defaultRcloneDir)) { New-Item -ItemType Directory -Path $defaultRcloneDir -Force | Out-Null }
+        Set-Content -Path "$defaultRcloneDir\rclone.conf" -Value $env:RCLONE_CONFIG_DATA
+
         $rcloneZip = "$env:TEMP\rclone.zip"
         Invoke-WebRequest -Uri "https://downloads.rclone.org/v1.65.2/rclone-v1.65.2-windows-amd64.zip" -OutFile $rcloneZip
         Expand-Archive -Path $rcloneZip -DestinationPath "$env:TEMP\rclone_ext" -Force
         $rcloneExe = (Get-ChildItem -Path "$env:TEMP\rclone_ext" -Filter "rclone.exe" -Recurse).FullName
         Copy-Item $rcloneExe -Destination "$workspacePath\rclone.exe" -Force
         
-        # Add Rclone to Global PATH so your custom VBS commands work natively!
-        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if ($machinePath -notmatch [regex]::Escape($workspacePath)) {
-            [Environment]::SetEnvironmentVariable("Path", "$machinePath;$workspacePath", "Machine")
-            $env:Path += ";$workspacePath"
-        }
+        # [FIX 2] Copy Rclone directly to C:\Windows so your custom VBS files work instantly without paths!
+        Copy-Item $rcloneExe -Destination "C:\Windows\rclone.exe" -Force
         
         Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
         $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
         
-        & "$workspacePath\rclone.exe" mkdir $cloudTarget
+        & "$workspacePath\rclone.exe" mkdir $cloudTarget --config $publicConf
         
         Write-Log "Downloading workspace & System Vault from Google Drive..." "WARN"
-        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
+        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--config", $publicConf, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
         & "$workspacePath\rclone.exe" @rcloneArgs
         
         Write-Log "Cloud Restore Complete." "SUCCESS"
@@ -68,31 +67,38 @@ try {
     }
 
     # ====================================================================
-    # THE VAULT UNLOCK: Load secrets.json and deploy VBS scripts
+    # THE SECURE VAULT UNLOCK
     # ====================================================================
     $secretsFile = Join-Path $workspacePath "System\secrets.json"
     if (Test-Path $secretsFile) {
         Write-Log "Unlocking CloudVault secrets.json..." "INFO"
         $vault = Get-Content $secretsFile -Raw | ConvertFrom-Json
-        
-        $env:TELEGRAM_BOT_TOKEN = $vault.telegram_bot_token
-        $env:TELEGRAM_CHAT_ID   = $vault.telegram_chat_id
-        $env:TELEGRAM_ADMIN_ID  = $vault.telegram_admin_id
-        $env:TAILSCALE_AUTH_KEY = $vault.tailscale_auth_key
-        $env:RDP_USERNAME       = $vault.rdp_username
-        $env:RDP_PASSWORD       = $vault.rdp_password
-        $env:GH_TOKEN           = $vault.gh_token
-
-        # Inject secrets permanently for the BotService step
         $ghEnv = "$env:GITHUB_ENV"
-        "TELEGRAM_BOT_TOKEN=$($vault.telegram_bot_token)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TELEGRAM_CHAT_ID=$($vault.telegram_chat_id)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TELEGRAM_ADMIN_ID=$($vault.telegram_admin_id)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TAILSCALE_AUTH_KEY=$($vault.tailscale_auth_key)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "RDP_USERNAME=$($vault.rdp_username)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "RDP_PASSWORD=$($vault.rdp_password)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "GH_TOKEN=$($vault.gh_token)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        Write-Log "Secrets loaded and injected successfully!" "SUCCESS"
+
+        foreach ($prop in $vault.PSObject.Properties) {
+            $val = [string]$prop.Value
+            if (-not [string]::IsNullOrWhiteSpace($val)) {
+                $cleanVal = $val.Trim()
+                Write-Host "::add-mask::$cleanVal"
+            }
+        }
+
+        $env:TELEGRAM_BOT_TOKEN = $vault.telegram_bot_token.Trim()
+        $env:TELEGRAM_CHAT_ID   = $vault.telegram_chat_id.Trim()
+        $env:TELEGRAM_ADMIN_ID  = $vault.telegram_admin_id.Trim()
+        $env:TAILSCALE_AUTH_KEY = $vault.tailscale_auth_key.Trim()
+        $env:RDP_USERNAME       = $vault.rdp_username.Trim()
+        $env:RDP_PASSWORD       = $vault.rdp_password.Trim()
+        $env:GH_TOKEN           = $vault.gh_token.Trim()
+
+        "TELEGRAM_BOT_TOKEN=$($env:TELEGRAM_BOT_TOKEN)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TELEGRAM_CHAT_ID=$($env:TELEGRAM_CHAT_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TELEGRAM_ADMIN_ID=$($env:TELEGRAM_ADMIN_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "TAILSCALE_AUTH_KEY=$($env:TAILSCALE_AUTH_KEY)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "RDP_USERNAME=$($env:RDP_USERNAME)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "RDP_PASSWORD=$($env:RDP_PASSWORD)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        "GH_TOKEN=$($env:GH_TOKEN)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
+        Write-Log "Secrets loaded, masked, and injected successfully!" "SUCCESS"
     } else {
         Write-Log "CRITICAL: System\secrets.json not found in Google Drive!" "ERROR"
         exit 1
@@ -113,7 +119,6 @@ try {
         Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
         Write-Log "Deployed custom unmount.vbs to Desktop." "SUCCESS"
     }
-    # ====================================================================
 
     # RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
@@ -143,8 +148,6 @@ try {
             Write-Log "==========================================" "SUCCESS"
             Write-Log "🖥️ RDP IP ADDRESS: $tsIp" "SUCCESS"
             Write-Log "==========================================" "SUCCESS"
-        } else {
-            Write-Log "Tailscale executable not found." "ERROR"
         }
     }
 
@@ -165,7 +168,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 8.6 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 9.1 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
