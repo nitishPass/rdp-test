@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.8 - Professional UI)
+    RDP Manager - RelayManager (Phase 6.9 - Bulletproof)
 .DESCRIPTION
     Handles rclone cloud synchronization, log backups, and GitHub API runner handoffs.
 #>
@@ -34,9 +34,21 @@ function Sync-CloudWorkspace {
     $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
     Set-Status "Pushing files to CloudVault... (This may take a few minutes)" 50
-    $cmd = "`"$rclone`" copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated --log-file `"$rcloneLog`" --log-level INFO"
     
-    Invoke-Expression "$cmd 2>&1" | Out-Null
+    # THE FIX: Bulletproof Array Splatting. Impossible to crash from bad quotes.
+    $rcloneArgs = @(
+        "copy", $WsPath, $cloudTarget, 
+        "--config", $confPath, 
+        "--exclude", "State/bot.log", 
+        "--exclude", "State/rclone_sync.log", 
+        "--transfers", "4", 
+        "--retries", "3", 
+        "--local-no-check-updated", 
+        "--log-file", $rcloneLog, 
+        "--log-level", "INFO"
+    )
+    
+    & $rclone @rcloneArgs 2>&1 | Out-Null
     
     if ($LASTEXITCODE -ne 0) { 
         $errLog = Get-Content $rcloneLog -Raw -ErrorAction SilentlyContinue
