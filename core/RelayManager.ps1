@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.3)
+    RDP Manager - RelayManager (Phase 6.4)
 .DESCRIPTION
     Handles rclone cloud synchronization and GitHub API runner handoffs.
 #>
@@ -28,14 +28,15 @@ function Sync-CloudWorkspace {
     $confPath = "$env:APPDATA\rclone\rclone.conf"
     $logPath = Join-Path $WsPath "State\rclone_sync.log"
     
-    # 2. Push Local -> Cloud (FIXED DEADLOCK: Redirect streams to a log file instead of the invisible console)
-    $argsList = @("copy", "`"$WsPath`"", "`"$cloudTarget`"", "--config", "`"$confPath`"", "--exclude", "`"State/bot.log`"", "--exclude", "`"State/rclone_sync.log`"", "--transfers", "4", "--retries", "3", "--local-no-check-updated")
+    # 2. Push Local -> Cloud (FIXED: Pass arguments as a single clean string)
+    $argString = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated"
     
-    $proc = Start-Process -FilePath $rclone -ArgumentList $argsList -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+    $proc = Start-Process -FilePath $rclone -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
     
-    if ($proc.ExitCode -ne 0) { 
+    if ($null -eq $proc.ExitCode -or $proc.ExitCode -ne 0) { 
         $errLog = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
-        throw "Rclone sync failed (Code $($proc.ExitCode)). Details: $errLog" 
+        $code = if ($null -ne $proc.ExitCode) { $proc.ExitCode } else { "CRASH" }
+        throw "Rclone sync failed (Code $code). Details: $errLog" 
     }
     return "✅ Workspace successfully synchronized to Cloud Vault."
 }
