@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 9.3 - Auto-Mount & OS Native Integration)
+    RDP Manager - Bootstrap (Phase 10.1 - Dynamic JSON Installer & The Great Debloat)
 #>
 
 [CmdletBinding()]
@@ -25,6 +25,25 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $statePath
     $null = New-Item -ItemType Directory -Force -Path $downloadsPath
     Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
+
+    # ====================================================================
+    # THE GREAT DEBLOAT: Reclaiming C: Drive Space
+    # ====================================================================
+    Write-Log "Initiating C: Drive Cleanup to reclaim space..." "WARN"
+    $junkPaths = @(
+        "C:\Android",
+        "C:\hostedtoolcache",
+        "C:\ProgramData\Docker",
+        "C:\mysql",
+        "C:\PostgreSQL"
+    )
+    foreach ($junk in $junkPaths) {
+        if (Test-Path $junk) {
+            Remove-Item -Path $junk -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+    Write-Log "Cleanup complete. C: Drive optimized." "SUCCESS"
+    # ====================================================================
 
     $publicConf = "C:\Users\Public\rclone.conf"
 
@@ -100,12 +119,42 @@ try {
     }
 
     # ====================================================================
+    # CLOUD-NATIVE SOFTWARE INSTALLER (Driven by software.json)
+    # ====================================================================
+    $softwareFile = Join-Path $workspacePath "System\software.json"
+    if (Test-Path $softwareFile) {
+        Write-Log "Reading software.json from CloudVault..." "INFO"
+        try {
+            $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+            $toInstall = @()
+            foreach ($pkg in $swData.packages) {
+                if ($pkg.enabled -eq $true) {
+                    $toInstall += $pkg.id
+                }
+            }
+            
+            if ($toInstall.Count -gt 0) {
+                Write-Log "Installing $($toInstall.Count) packages via Chocolatey..." "WARN"
+                $pkgString = $toInstall -join " "
+                Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --no-progress" -Wait -NoNewWindow
+                Write-Log "Software installation complete!" "SUCCESS"
+            } else {
+                Write-Log "No packages enabled in software.json." "INFO"
+            }
+        } catch {
+            Write-Log "Error parsing software.json: $($_.Exception.Message)" "ERROR"
+        }
+    } else {
+        Write-Log "System\software.json not found. Skipping dynamic software install." "WARN"
+    }
+    # ====================================================================
+
+    # ====================================================================
     # AUTO-MOUNT & DESKTOP SCRIPT DEPLOYMENT
     # ====================================================================
     $desktopPath = "C:\Users\Public\Desktop"
     if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
     
-    # [NEW] The Windows Global Startup Folder
     $startupPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
     if (-not (Test-Path $startupPath)) { New-Item -ItemType Directory -Path $startupPath -Force | Out-Null }
     
@@ -114,7 +163,6 @@ try {
     
     if (Test-Path $mountVbs) {
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
-        # [NEW] Copy to Startup so it auto-executes on RDP Login!
         Copy-Item -Path $mountVbs -Destination "$startupPath\mount.vbs" -Force
         Write-Log "Deployed custom mount.vbs to Desktop and Auto-Startup." "SUCCESS"
     }
@@ -171,7 +219,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 9.3 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 10.1 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
