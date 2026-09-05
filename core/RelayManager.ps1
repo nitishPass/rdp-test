@@ -1,48 +1,59 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 6.5)
+    RDP Manager - RelayManager (Phase 6.8 - Professional UI)
 .DESCRIPTION
-    Handles rclone cloud synchronization and GitHub API runner handoffs.
+    Handles rclone cloud synchronization, log backups, and GitHub API runner handoffs.
 #>
 
 function Sync-CloudWorkspace {
-    param([string]$WsPath, [string]$CloudName, [string]$RootName, [string]$RpcPort = "6800")
+    param([string]$WsPath, [string]$CloudName, [string]$RootName, [string]$RpcPort = "6800", [string]$JobId = "", $ProgDict = $null)
     
-    # 1. Force pause and explicitly save the aria2 session to disk
+    function Set-Status([string]$Msg, [int]$Pct) {
+        if ($JobId -and $null -ne $ProgDict) { $ProgDict[$JobId] = @{ type="sys"; msg=$Msg; pct=$Pct } }
+    }
+
+    Set-Status "Flushing I/O & Pausing Downloads..." 10
     try {
         $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
-        
-        $body1 = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.forcePauseAll`" }"
-        Invoke-RestMethod -Uri $rpc -Method Post -Body $body1 -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
-        
-        $body2 = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.saveSession`" }"
-        Invoke-RestMethod -Uri $rpc -Method Post -Body $body2 -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
-        
+        Invoke-RestMethod -Uri $rpc -Method Post -Body "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.forcePauseAll`" }" -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+        Invoke-RestMethod -Uri $rpc -Method Post -Body "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.saveSession`" }" -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
         Start-Sleep -Seconds 4
     } catch { }
+
+    Set-Status "Archiving System Logs..." 25
+    $logDest = Join-Path $WsPath "LogsArchive"
+    if (-not (Test-Path $logDest)) { New-Item -ItemType Directory -Path $logDest | Out-Null }
+    $timeStamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
+    Copy-Item -Path (Join-Path $WsPath "State\bot.log") -Destination (Join-Path $logDest "bot_$timeStamp.log") -ErrorAction SilentlyContinue
 
     $rclone = Join-Path $WsPath "rclone.exe"
     if (-not (Test-Path $rclone)) { throw "rclone is not installed or configured." }
     
     $cloudTarget = "${CloudName}:${RootName}"
     $confPath = "$env:APPDATA\rclone\rclone.conf"
-    $logPath = Join-Path $WsPath "State\rclone_sync.log"
+    $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
-    # FIXED: Use rclone's native --log-file. Bypass PowerShell stream redirection completely!
-    $argString = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated --log-file `"$logPath`" --log-level INFO"
+    Set-Status "Pushing files to CloudVault... (This may take a few minutes)" 50
+    $cmd = "`"$rclone`" copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated --log-file `"$rcloneLog`" --log-level INFO"
     
-    $proc = Start-Process -FilePath $rclone -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden
+    Invoke-Expression "$cmd 2>&1" | Out-Null
     
-    if ($null -eq $proc.ExitCode -or $proc.ExitCode -ne 0) { 
-        $errLog = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
-        $code = if ($null -ne $proc.ExitCode) { $proc.ExitCode } else { "CRASH" }
-        throw "Rclone sync failed (Code $code). Details: $errLog" 
+    if ($LASTEXITCODE -ne 0) { 
+        $errLog = Get-Content $rcloneLog -Raw -ErrorAction SilentlyContinue
+        throw "Rclone sync failed (Code $LASTEXITCODE). Details: $errLog" 
     }
-    return "✅ Workspace successfully synchronized to Cloud Vault."
+
+    Copy-Item -Path $rcloneLog -Destination (Join-Path $logDest "rclone_$timeStamp.log") -ErrorAction SilentlyContinue
+
+    Set-Status "Cloud Sync Complete!" 100
+    return "✅ Workspace & Logs successfully synchronized to Cloud Vault."
 }
 
 function Invoke-RunnerRelay {
-    param([string]$Repo, [string]$Token)
+    param([string]$Repo, [string]$Token, [string]$JobId = "", $ProgDict = $null)
+    
+    if ($JobId -and $null -ne $ProgDict) { $ProgDict[$JobId] = @{ type="sys"; msg="Dispatching GitHub API Handoff..."; pct=100 } }
+    
     if (-not $Token) { throw "GH_TOKEN not found! Cannot trigger next runner." }
     if (-not $Repo) { throw "GITHUB_REPO environment variable not found." }
     
