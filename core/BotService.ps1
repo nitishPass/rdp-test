@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 10.5 - Administrative Action Binding)
+    RDP Manager - BotService (Phase 10.8 - Clean UI Watchdog)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -159,10 +159,10 @@ function Invoke-VFSWatchdog {
             Stop-Process -Name "rclone" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            # [FIX] VFS Watchdog now uses the Admin Wrapper to restore the mount
-            $mountBat = "C:\Users\Public\Desktop\Mount_CloudVault_Admin.bat"
-            if (Test-Path $mountBat) {
-                Start-Process "cmd.exe" -ArgumentList "/c `"$mountBat`"" -WindowStyle Hidden
+            # [FIX] VFS Watchdog natively executes the standard mount.vbs
+            $mountVbs = "C:\Users\Public\Desktop\mount.vbs"
+            if (Test-Path $mountVbs) {
+                Start-Process "wscript.exe" -ArgumentList "`"$mountVbs`"" -WindowStyle Hidden
                 Start-Sleep -Seconds 5
 
                 $checkProc = Get-CimInstance Win32_Process -Filter "Name='rclone.exe'" | Where-Object { $_.CommandLine -match "mount" -and $_.CommandLine -match "Z:" }
@@ -255,7 +255,7 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Drive Z: and Workstation scripts will automatically launch as Admin!</i>"
+                    $msg += "<i>Z: Drive & Workspace scripts will auto-launch when you log in!</i>"
                     
                     $mId = Send-TelegramMessage $msg -ParseMode "HTML"
                     if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
@@ -378,8 +378,7 @@ $bootMsg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
 $bootMsg += "☁️ <b>CloudVault:</b> <code>Auto-Mounting (Z:)</code>`n`n"
 $bootMsg += "<i>System has successfully initialized. Type /help to view commands.</i>"
 Send-TelegramMessage $bootMsg -ParseMode "HTML" | Out-Null
-Write-BotLog "=== BOT SERVICE (PHASE 10.5) INITIALIZED ===" "INFO"
-
+Write-BotLog "=== BOT SERVICE (PHASE 10.8) INITIALIZED ===" "INFO"
 
 while (-not $global:ShutdownRequested) {
     try {
