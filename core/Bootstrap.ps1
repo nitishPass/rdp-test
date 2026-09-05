@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 10.1 - Dynamic JSON Installer & The Great Debloat)
+    RDP Manager - Bootstrap (Phase 10.2 - Instant Boot & Post-Login Setup)
 #>
 
 [CmdletBinding()]
@@ -25,25 +25,6 @@ try {
     $null = New-Item -ItemType Directory -Force -Path $statePath
     $null = New-Item -ItemType Directory -Force -Path $downloadsPath
     Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
-
-    # ====================================================================
-    # THE GREAT DEBLOAT: Reclaiming C: Drive Space
-    # ====================================================================
-    Write-Log "Initiating C: Drive Cleanup to reclaim space..." "WARN"
-    $junkPaths = @(
-        "C:\Android",
-        "C:\hostedtoolcache",
-        "C:\ProgramData\Docker",
-        "C:\mysql",
-        "C:\PostgreSQL"
-    )
-    foreach ($junk in $junkPaths) {
-        if (Test-Path $junk) {
-            Remove-Item -Path $junk -Recurse -Force -ErrorAction SilentlyContinue | Out-Null
-        }
-    }
-    Write-Log "Cleanup complete. C: Drive optimized." "SUCCESS"
-    # ====================================================================
 
     $publicConf = "C:\Users\Public\rclone.conf"
 
@@ -119,48 +100,75 @@ try {
     }
 
     # ====================================================================
-    # CLOUD-NATIVE SOFTWARE INSTALLER (Driven by software.json)
+    # DYNAMIC POST-LOGIN SETUP INJECTION (Debloat & Software)
     # ====================================================================
-    $softwareFile = Join-Path $workspacePath "System\software.json"
-    if (Test-Path $softwareFile) {
-        Write-Log "Reading software.json from CloudVault..." "INFO"
-        try {
-            $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
-            $toInstall = @()
-            foreach ($pkg in $swData.packages) {
-                if ($pkg.enabled -eq $true) {
-                    $toInstall += $pkg.id
-                }
-            }
-            
-            if ($toInstall.Count -gt 0) {
-                Write-Log "Installing $($toInstall.Count) packages via Chocolatey..." "WARN"
-                $pkgString = $toInstall -join " "
-                Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --no-progress" -Wait -NoNewWindow
-                Write-Log "Software installation complete!" "SUCCESS"
-            } else {
-                Write-Log "No packages enabled in software.json." "INFO"
-            }
-        } catch {
-            Write-Log "Error parsing software.json: $($_.Exception.Message)" "ERROR"
-        }
-    } else {
-        Write-Log "System\software.json not found. Skipping dynamic software install." "WARN"
-    }
-    # ====================================================================
-
-    # ====================================================================
-    # AUTO-MOUNT & DESKTOP SCRIPT DEPLOYMENT
-    # ====================================================================
+    Write-Log "Injecting Post-Login Setup Script..." "INFO"
     $desktopPath = "C:\Users\Public\Desktop"
     if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
     
     $startupPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
     if (-not (Test-Path $startupPath)) { New-Item -ItemType Directory -Path $startupPath -Force | Out-Null }
+
+    $setupPs1 = "$desktopPath\WorkstationSetup.ps1"
+    $setupBat = "$startupPath\Run_WorkstationSetup.bat"
+
+    $ps1Content = @'
+Write-Host "===================================================" -ForegroundColor Cyan
+Write-Host "   RDP WORKSTATION INITIALIZATION                  " -ForegroundColor Cyan
+Write-Host "===================================================" -ForegroundColor Cyan
+
+Write-Host "`n[1/2] Reclaiming C: Drive Space (The Great Debloat)..." -ForegroundColor Yellow
+$junkPaths = @("C:\Android", "C:\hostedtoolcache", "C:\ProgramData\Docker", "C:\mysql", "C:\PostgreSQL")
+foreach ($junk in $junkPaths) { 
+    if (Test-Path $junk) { 
+        Write-Host "      Deleting $junk..." -ForegroundColor DarkGray
+        Remove-Item -Path $junk -Recurse -Force -ErrorAction SilentlyContinue | Out-Null 
+    } 
+}
+Write-Host "      Cleanup Complete!" -ForegroundColor Green
+
+Write-Host "`n[2/2] Installing Software from CloudVault software.json..." -ForegroundColor Yellow
+$softwareFile = "{WORKSPACE_PATH}\System\software.json"
+if (Test-Path $softwareFile) {
+    try {
+        $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+        $toInstall = @()
+        foreach ($pkg in $swData.packages) { if ($pkg.enabled -eq $true) { $toInstall += $pkg.id } }
+        if ($toInstall.Count -gt 0) {
+            $pkgString = $toInstall -join " "
+            Write-Host "      Installing: $pkgString" -ForegroundColor Cyan
+            Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --no-progress" -Wait -NoNewWindow
+            Write-Host "      Software installation complete!" -ForegroundColor Green
+        } else {
+            Write-Host "      No enabled packages found." -ForegroundColor DarkGray
+        }
+    } catch { Write-Host "      Error reading software.json: $($_.Exception.Message)" -ForegroundColor Red }
+} else {
+    Write-Host "      System\software.json not found. Skipping." -ForegroundColor DarkYellow
+}
+
+Write-Host "`n===================================================" -ForegroundColor Cyan
+Write-Host "   SETUP FINISHED. You can safely close this!      " -ForegroundColor Cyan
+Write-Host "===================================================" -ForegroundColor Cyan
+
+# Self-destruct the shortcut so it doesn't run on next reconnect!
+$startupBat = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Run_WorkstationSetup.bat"
+if (Test-Path $startupBat) { Remove-Item -Path $startupBat -Force -ErrorAction SilentlyContinue }
+
+Start-Sleep -Seconds 15
+'@
+    # Inject dynamic paths into the script block
+    $ps1Content = $ps1Content -replace '\{WORKSPACE_PATH\}', $workspacePath
+    Set-Content -Path $setupPs1 -Value $ps1Content
     
+    $batContent = "@echo off`ntitle RDP Workstation Setup`npowershell.exe -ExecutionPolicy Bypass -File `"$setupPs1`""
+    Set-Content -Path $setupBat -Value $batContent
+    Write-Log "Post-Login script deployed successfully." "SUCCESS"
+    # ====================================================================
+
+    # Auto-Mount Deployment
     $mountVbs = Join-Path $workspacePath "System\mount.vbs"
     $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
-    
     if (Test-Path $mountVbs) {
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
         Copy-Item -Path $mountVbs -Destination "$startupPath\mount.vbs" -Force
@@ -219,7 +227,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 10.1 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 10.2 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
