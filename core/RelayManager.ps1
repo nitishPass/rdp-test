@@ -28,20 +28,10 @@ function Sync-CloudWorkspace {
     $confPath = "$env:APPDATA\rclone\rclone.conf"
     $logPath = Join-Path $WsPath "State\rclone_sync.log"
     
-    # FIXED: Use an array and let Start-Process handle the quotation marks automatically!
-    $argsList = @(
-        "copy", 
-        $WsPath, 
-        $cloudTarget, 
-        "--config", $confPath, 
-        "--exclude", "State/bot.log", 
-        "--exclude", "State/rclone_sync.log", 
-        "--transfers", "4", 
-        "--retries", "3", 
-        "--local-no-check-updated"
-    )
+    # FIXED: Use rclone's native --log-file. Bypass PowerShell stream redirection completely!
+    $argString = "copy `"$WsPath`" `"$cloudTarget`" --config `"$confPath`" --exclude `"State/bot.log`" --exclude `"State/rclone_sync.log`" --transfers 4 --retries 3 --local-no-check-updated --log-file `"$logPath`" --log-level INFO"
     
-    $proc = Start-Process -FilePath $rclone -ArgumentList $argsList -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $logPath
+    $proc = Start-Process -FilePath $rclone -ArgumentList $argString -Wait -PassThru -WindowStyle Hidden
     
     if ($null -eq $proc.ExitCode -or $proc.ExitCode -ne 0) { 
         $errLog = Get-Content $logPath -Raw -ErrorAction SilentlyContinue
