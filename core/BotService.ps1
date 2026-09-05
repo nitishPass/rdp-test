@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 6.5)
+    RDP Manager - BotService (Phase 6.8 - Professional UI)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -166,7 +166,6 @@ function Route-Command {
                     $gid = $res.result
                     if (-not $gid) { throw "Failed to get GID from aria2." }
                     
-                    # FIXED: Wake up all downloads in case they were restored from a paused cloud state
                     $unpauseBody = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.unpauseAll`" }"
                     Invoke-RestMethod -Uri $rpc -Method Post -Body $unpauseBody -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
                     
@@ -181,12 +180,13 @@ function Route-Command {
                         $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellStatus`", `"params`": [`"$gid`"] }"
                         $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
                         $info = $statusRes.result
+                        $info | Add-Member -MemberType NoteProperty -Name "jobType" -Value "download" -Force
                         $ProgressDict[$JobId] = $info
                         
-                        # FIXED: Removed 'paused' from the kill-switch. Paused jobs just show PAUSED now.
-                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed") {
+                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed" -or $info.status -eq "paused") {
                             $completed = $true
                             if ($info.status -eq "error") { throw "Aria2 Error: $($info.errorCode)" }
+                            if ($info.status -eq "paused") { return "⏸️ Download paused safely for Workspace Relay." }
                         }
                     }
                     return "✅ Download successfully completed!"
@@ -195,21 +195,21 @@ function Route-Command {
             }
             "/backup" {
                 $sb = {
-                    param($WsPath, $CloudName, $RootName, $CorePath, $RpcPort)
+                    param($JobId, $WsPath, $CloudName, $RootName, $CorePath, $RpcPort, $ProgDict)
                     . (Join-Path $CorePath "RelayManager.ps1")
-                    return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
+                    return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort -JobId $JobId -ProgDict $ProgDict
                 }
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $PSScriptRoot, $Config.aria2.rpcPort)
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($jobId, $WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $PSScriptRoot, $Config.aria2.rpcPort, $global:JobManager_ProgressDict)
             }
             "/relay" {
                 $sb = {
-                    param($WsPath, $CloudName, $RootName, $Repo, $Token, $CorePath, $RpcPort)
+                    param($JobId, $WsPath, $CloudName, $RootName, $Repo, $Token, $CorePath, $RpcPort, $ProgDict)
                     . (Join-Path $CorePath "RelayManager.ps1")
-                    $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort
-                    $relayRes = Invoke-RunnerRelay -Repo $Repo -Token $Token
+                    $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort -JobId $JobId -ProgDict $ProgDict
+                    $relayRes = Invoke-RunnerRelay -Repo $Repo -Token $Token -JobId $JobId -ProgDict $ProgDict
                     return "$syncRes`n$relayRes`n`n⚠️ Shutting down current runner in 10 seconds to allow handoff."
                 }
-                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $env:GITHUB_REPO, $env:GH_TOKEN, $PSScriptRoot, $Config.aria2.rpcPort)
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($jobId, $WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $env:GITHUB_REPO, $env:GH_TOKEN, $PSScriptRoot, $Config.aria2.rpcPort, $global:JobManager_ProgressDict)
             }
         }
     }
@@ -252,19 +252,31 @@ while (-not $global:ShutdownRequested) {
     foreach ($jId in $keys) {
         if ($global:JobMessageMap.ContainsKey($jId)) {
             $msgData = $global:JobMessageMap[$jId]
-            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds($Config.aria2.progressUpdateSeconds)) {
+            
+            # Ultra-fast 2 second refresh rate!
+            if ((Get-Date) -ge $msgData.LastUpdate.AddSeconds(2)) {
                 $info = $global:JobManager_ProgressDict[$jId]
                 if ($info) {
-                    $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
-                    $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
-                    $progBar = Get-ProgressBar -Percent $pct
-                    $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
-                    $spdStr = Format-Bytes -Bytes $speed
-                    $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
-                    
-                    $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
-                    Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
-                    $msgData.LastUpdate = Get-Date
+                    if ($info.type -eq "sys") {
+                        # System Job UI (Relay/Backup)
+                        $pct = $info.pct
+                        $progBar = Get-ProgressBar -Percent $pct
+                        $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
+                        $msgData.LastUpdate = Get-Date
+                    } elseif ($info.jobType -eq "download") {
+                        # Download Job UI
+                        $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+                        $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+                        $progBar = Get-ProgressBar -Percent $pct
+                        $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
+                        $spdStr = Format-Bytes -Bytes $speed
+                        $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+                        
+                        $text = "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
+                        Edit-TelegramMessage -MessageId $msgData.MessageId -Text $text
+                        $msgData.LastUpdate = Get-Date
+                    }
                 }
             }
         }
