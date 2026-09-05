@@ -24,6 +24,7 @@ jobs:
       RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       IS_RELAY: ${{ github.event.inputs.is_relay }}
+      GITHUB_REPO: ${{ github.repository }}
 
     steps:
       - name: Checkout Repository
