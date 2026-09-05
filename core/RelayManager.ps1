@@ -1,8 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 7.1 - 512M Chunk Limit)
-.DESCRIPTION
-    Handles rclone cloud synchronization, log backups, and GitHub API runner handoffs.
+    RDP Manager - RelayManager (Phase 8.4 - Universal Config)
 #>
 
 function Sync-CloudWorkspace {
@@ -30,17 +28,17 @@ function Sync-CloudWorkspace {
     if (-not (Test-Path $rclone)) { throw "rclone is not installed or configured." }
     
     $cloudTarget = "${CloudName}:${RootName}"
-    $confPath = "$env:APPDATA\rclone\rclone.conf"
+    $confPath = Join-Path $WsPath "rclone.conf" # [FIX] Pointed to the new Workspace config!
     $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
     Set-Status "Pushing files to CloudVault (Gigabit Mode Active)..." 50
     
-    # FIXED: Cranked drive-chunk-size to 512M!
     $rcloneArgs = @(
         "copy", $WsPath, $cloudTarget, 
         "--config", $confPath, 
         "--exclude", "State/bot.log", 
         "--exclude", "State/rclone_sync.log", 
+        "--exclude", "rclone.conf",
         "--transfers", "8", 
         "--checkers", "8",
         "--drive-chunk-size", "512M",
