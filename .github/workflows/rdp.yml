@@ -1,4 +1,4 @@
-name: RDP Workspace (Phase 8.6 - Cloud Native)
+name: RDP Workspace (Phase 9.0)
 
 on:
   workflow_dispatch:
@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 360
 
     env:
-      # THE MASTER KEY: The only secret GitHub needs to unlock your CloudVault!
       RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
       IS_RELAY: ${{ github.event.inputs.is_relay }}
       GITHUB_REPO: ${{ github.repository }}
