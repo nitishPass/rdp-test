@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 8.4 - UI Update)
+    RDP Manager - BotService (Phase 8.6 - Cloud-Native UI)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +16,7 @@ function Write-BotLog {
     Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
-Write-BotLog "=== BOT SERVICE (PHASE 8.4) STARTED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 8.6) STARTED ===" "INFO"
 $ConfigPath = "$PSScriptRoot\..\config\settings.json"
 $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 
@@ -30,6 +30,8 @@ $global:Offset = 0; $JobCounter = 1
 $global:JobMessageMap = @{}
 $global:ShutdownRequested = $false
 $global:LastConsolePrint = Get-Date
+
+$global:DeleteQueue = @{} 
 
 . (Join-Path $PSScriptRoot "JobManager.ps1")
 . (Join-Path $PSScriptRoot "RelayManager.ps1")
@@ -140,7 +142,24 @@ function Route-Command {
     if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
             "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
-            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/stop - Terminate workflow`n/rdp - Connection Info" }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/stop - Terminate workflow`n/rdp - Connection Info" }
+            "/cancel" {
+                $target = $args.ToUpper().Trim()
+                if (-not $target) {
+                    Send-TelegramMessage "⚠️ Provide a Job ID (e.g., `/cancel JOB-001` or `/cancel GID-xxxx`)."
+                    break
+                }
+                $global:JobManager_CancelDict[$target] = $true
+                
+                if ($target -match "^GID-(.+)") {
+                    $gid = $matches[1]
+                    $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
+                    Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+                }
+                
+                Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
+            }
             "/stop" {
                 Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
                 Write-BotLog "User requested immediate shutdown via /stop." "WARN"
@@ -157,18 +176,10 @@ function Route-Command {
                     $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
                     $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
                     $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
-                    $msg += "<i>Double-click 'Mount_CloudVault.vbs' on the desktop to access Z:!</i>"
+                    $msg += "<i>Double-click 'mount.vbs' on the desktop to launch your drives!</i>"
                     
                     $mId = Send-TelegramMessage $msg
-                    
-                    if ($mId) {
-                        $sb = {
-                            param($mId, $cId, $botToken)
-                            Start-Sleep -Seconds 60
-                            Invoke-RestMethod -Uri "https://api.telegram.org/bot$botToken/deleteMessage" -Method Post -Body @{chat_id=$cId; message_id=$mId} -ErrorAction SilentlyContinue
-                        }
-                        Start-ThreadJob -ScriptBlock $sb -ArgumentList @($mId, $AllowedChatId, $BotToken) | Out-Null
-                    }
+                    if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
                 } else {
                     Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
                 }
@@ -190,7 +201,7 @@ function Route-Command {
                         $jId = "GID-$($d.gid)"
                         $global:JobManager_ProgressDict[$jId] = $info
                         
-                        $markup = @{ inline_keyboard = @( @( 
+                        $markup = @{ inline_keyboard = @( ,( 
                             @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
                             @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
                         ) ) }
@@ -200,7 +211,7 @@ function Route-Command {
                 } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
             }
             "/status" {
-                $markup = @{ inline_keyboard = @( @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
                 Send-TelegramMessage (Get-LiveDashboardText) -ReplyMarkup $markup | Out-Null
             }
         }
@@ -211,7 +222,7 @@ function Route-Command {
         $jobId = "JOB-$($JobCounter.ToString('000'))"
         $script:JobCounter++
         
-        $markup = @{ inline_keyboard = @( @( 
+        $markup = @{ inline_keyboard = @( ,( 
             @{ text="🔄 Refresh"; callback_data="refresh_$jobId" },
             @{ text="🛑 Cancel"; callback_data="cancel_$jobId" }
         ) ) }
@@ -297,14 +308,14 @@ while (-not $global:ShutdownRequested) {
                     Invoke-RestMethod -Uri "$ApiUrl/answerCallbackQuery" -Method Post -Body @{callback_query_id=$cb.id} -ErrorAction SilentlyContinue | Out-Null
                     
                     if ($cbData -eq "refresh_dash") {
-                        $markup = @{ inline_keyboard = @( @( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                        $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
                         Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ReplyMarkup $markup
                     }
                     elseif ($cbData -match "^refresh_(.+)") {
                         $jId = $matches[1]
                         if ($global:JobManager_ProgressDict.ContainsKey($jId)) {
                             $info = $global:JobManager_ProgressDict[$jId]
-                            $markup = @{ inline_keyboard = @( @( 
+                            $markup = @{ inline_keyboard = @( ,( 
                                 @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
                                 @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
                             ) ) }
@@ -356,6 +367,14 @@ while (-not $global:ShutdownRequested) {
             }
             elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" }
             $global:JobMessageMap.Remove($event.JobId)
+        }
+    }
+
+    $now = Get-Date
+    foreach ($dId in @($global:DeleteQueue.Keys)) {
+        if ($now -ge $global:DeleteQueue[$dId]) {
+            Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$dId} -ErrorAction SilentlyContinue | Out-Null
+            $global:DeleteQueue.Remove($dId)
         }
     }
 
