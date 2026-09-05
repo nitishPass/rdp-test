@@ -1,179 +1,416 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 8.9 - Dynamic Secret Masking & Security Fix)
+    RDP Manager - BotService (Phase 9.0 - Manual UI & Stability)
 #>
 
-[CmdletBinding()]
-param ([string]$ConfigPath = "$PSScriptRoot\..\config\settings.json")
 $ErrorActionPreference = 'Continue'
+$StartTime = Get-Date
+$WorkspacePath = $env:WORKSPACE_ROOT
+$LogFile = if ($WorkspacePath) { Join-Path $WorkspacePath "State\bot.log" } else { "C:\Users\Public\Desktop\bot_emergency.log" }
 
-function Write-Log {
+$BotToken = if ($env:TELEGRAM_BOT_TOKEN) { $env:TELEGRAM_BOT_TOKEN.Trim() } else { "" }
+$AllowedChatId = if ($env:TELEGRAM_CHAT_ID) { $env:TELEGRAM_CHAT_ID.Trim() } else { "" }
+$AdminUserId = if ($env:TELEGRAM_ADMIN_ID) { $env:TELEGRAM_ADMIN_ID.Trim() } else { "" }
+
+function Write-BotLog {
     param ([string]$Message, [string]$Level = 'INFO')
-    $color = switch ($Level) { 'INFO'{'Cyan'} 'WARN'{'Yellow'} 'ERROR'{'Red'} 'SUCCESS'{'Green'} }
-    Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] [$Level] $Message" -ForegroundColor $color
+    if ($BotToken) { $Message = $Message.Replace($BotToken, "[REDACTED_TOKEN]") }
+    if ($env:TAILSCALE_AUTH_KEY) { $Message = $Message.Replace($env:TAILSCALE_AUTH_KEY.Trim(), "[REDACTED_TS_KEY]") }
+    $logEntry = "[$((Get-Date).ToString('HH:mm:ss'))] [BOT-$Level] $Message"
+    Add-Content -Path $LogFile -Value $logEntry; Write-Host $logEntry
 }
 
+Write-BotLog "=== BOT SERVICE (PHASE 9.0) STARTED ===" "INFO"
+$ConfigPath = "$PSScriptRoot\..\config\settings.json"
+$Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+
+if (-not $BotToken -or -not $AllowedChatId -or -not $AdminUserId) { Write-BotLog "Missing credentials! Did secrets.json load properly?"; exit 1 }
+$ApiUrl = "https://api.telegram.org/bot$BotToken"
+$global:Offset = 0; $JobCounter = 1
+$global:JobMessageMap = @{}
+$global:ShutdownRequested = $false
+$global:LastConsolePrint = Get-Date
+$global:DeleteQueue = @{} 
+
+. (Join-Path $PSScriptRoot "JobManager.ps1")
+. (Join-Path $PSScriptRoot "RelayManager.ps1")
+Initialize-JobManager
+
+# ==========================================
+# VANISH PROTOCOL
+# ==========================================
+$HistoryFile = Join-Path $WorkspacePath "State\msg_history.json"
 try {
-    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $global:MsgHistory = if (Test-Path $HistoryFile) { Get-Content $HistoryFile -Raw | ConvertFrom-Json } else { @() }
+    if ($null -eq $global:MsgHistory) { $global:MsgHistory = @() }
+} catch { $global:MsgHistory = @() }
 
-    $volumes = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free -gt 0 -and $_.Root -match '^[A-Z]:\\$' }
-    $bestDrive = $volumes | Sort-Object Free -Descending | Select-Object -First 1
-    $workspacePath = Join-Path $bestDrive.Root $Config.storage.workspaceRootName
-    $statePath = Join-Path $workspacePath $Config.storage.stateFolderName
-    $downloadsPath = Join-Path $workspacePath $Config.storage.downloadsFolderName
-    
-    $null = New-Item -ItemType Directory -Force -Path $statePath
-    $null = New-Item -ItemType Directory -Force -Path $downloadsPath
-    Write-Log "Workspace initialized at $workspacePath" "SUCCESS"
-
-    $publicConf = "C:\Users\Public\rclone.conf"
-
-    if ($env:RCLONE_CONFIG_DATA) {
-        Write-Log "Installing rclone & setting Universal Config..." "INFO"
-        Set-Content -Path $publicConf -Value $env:RCLONE_CONFIG_DATA
-        [Environment]::SetEnvironmentVariable("RCLONE_CONFIG", $publicConf, "Machine")
-        $env:RCLONE_CONFIG = $publicConf
-        
-        $rcloneZip = "$env:TEMP\rclone.zip"
-        Invoke-WebRequest -Uri "https://downloads.rclone.org/v1.65.2/rclone-v1.65.2-windows-amd64.zip" -OutFile $rcloneZip
-        Expand-Archive -Path $rcloneZip -DestinationPath "$env:TEMP\rclone_ext" -Force
-        $rcloneExe = (Get-ChildItem -Path "$env:TEMP\rclone_ext" -Filter "rclone.exe" -Recurse).FullName
-        Copy-Item $rcloneExe -Destination "$workspacePath\rclone.exe" -Force
-        
-        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if ($machinePath -notmatch [regex]::Escape($workspacePath)) {
-            [Environment]::SetEnvironmentVariable("Path", "$machinePath;$workspacePath", "Machine")
-            $env:Path += ";$workspacePath"
-        }
-        
-        Write-Log "Syncing Cloud Workspace -> Local Disk..." "INFO"
-        $cloudTarget = "$($Config.relay.cloudDriveName):$($Config.storage.workspaceRootName)"
-        
-        & "$workspacePath\rclone.exe" mkdir $cloudTarget
-        
-        Write-Log "Downloading workspace & System Vault from Google Drive..." "WARN"
-        $rcloneArgs = @("copy", $cloudTarget, $workspacePath, "--transfers", "8", "--stats", "10s", "--stats-one-line", "-v")
-        & "$workspacePath\rclone.exe" @rcloneArgs
-        
-        Write-Log "Cloud Restore Complete." "SUCCESS"
-        
-        Write-Log "Installing WinFsp for Rclone Virtual Drive Mounting..." "INFO"
-        choco install winfsp -y --no-progress | Out-Null
-        
-    } else {
-        Write-Log "RCLONE_CONFIG_DATA not found. Fatal Error." "ERROR"
-        exit 1
+if ($global:MsgHistory.Count -gt 0) {
+    Write-BotLog "Executing Vanish Protocol: Deleting $($global:MsgHistory.Count) previous messages..." "INFO"
+    foreach ($mId in $global:MsgHistory) {
+        Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$mId} -ErrorAction SilentlyContinue | Out-Null
     }
+}
+$global:MsgHistory = @()
+ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
 
-    # ====================================================================
-    # THE SECURE VAULT UNLOCK: Load secrets.json & Mask from GitHub Logs
-    # ====================================================================
-    $secretsFile = Join-Path $workspacePath "System\secrets.json"
-    if (Test-Path $secretsFile) {
-        Write-Log "Unlocking CloudVault secrets.json..." "INFO"
-        $vault = Get-Content $secretsFile -Raw | ConvertFrom-Json
-        $ghEnv = "$env:GITHUB_ENV"
+try {
+    $flush = Invoke-RestMethod -Uri "$ApiUrl/getUpdates" -Method Get -TimeoutSec 15 -ErrorAction SilentlyContinue
+    if ($flush.ok -and $flush.result.Count -gt 0) {
+        $global:Offset = $flush.result[-1].update_id + 1
+        Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -TimeoutSec 15 -ErrorAction SilentlyContinue | Out-Null
+    }
+} catch { }
 
-        # [CRITICAL SECURITY FIX] Force GitHub to mask every single dynamically loaded value!
-        foreach ($prop in $vault.PSObject.Properties) {
-            $val = [string]$prop.Value
-            if (-not [string]::IsNullOrWhiteSpace($val)) {
-                $cleanVal = $val.Trim()
-                Write-Host "::add-mask::$cleanVal"
+function Send-TelegramMessage {
+    param ([string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
+    try {
+        $payload = @{ chat_id = $AllowedChatId; text = $Text; parse_mode = $ParseMode }
+        if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
+        
+        $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
+        $resp = Invoke-RestMethod -Uri "$ApiUrl/sendMessage" -Method Post -Body $jsonBody -ContentType "application/json"
+        
+        $mId = $resp.result.message_id
+        $global:MsgHistory += $mId
+        ConvertTo-Json -InputObject $global:MsgHistory -Compress | Out-File $HistoryFile -Encoding utf8
+        return $mId
+    } catch { Write-BotLog "Telegram Send Error: $($_.Exception.Message)" "ERROR" }
+}
+
+function Edit-TelegramMessage {
+    param ([string]$MessageId, [string]$Text, [string]$ParseMode = "HTML", $ReplyMarkup = $null)
+    try {
+        $payload = @{ chat_id = $AllowedChatId; message_id = $MessageId; text = $Text; parse_mode = $ParseMode }
+        if ($ReplyMarkup) { $payload["reply_markup"] = $ReplyMarkup }
+        
+        $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
+        Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $jsonBody -ContentType "application/json" | Out-Null
+    } catch { }
+}
+
+function Get-LiveDashboardText {
+    $cpu = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
+    $os = Get-CimInstance Win32_OperatingSystem
+    $ram = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)
+    $drvLet = if ($WorkspacePath) { $WorkspacePath.Substring(0,1) } else { "C" }
+    $drv = Get-PSDrive -Name $drvLet
+    $disk = [math]::Round((($drv.Used) / ($drv.Used + $drv.Free)) * 100, 1)
+    $uptime = (Get-Date) - $StartTime
+    $upStr = "{0:00}:{1:00}:{2:00}" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+    $jStats = Get-JobManagerStats
+
+    $out = "┌─────────────────────────────┐`n│ 🖥️ <b>RDP MANAGER DASHBOARD</b>`n│ ───────────────────────────`n│ 🟢 SYSTEM ONLINE`n│`n"
+    $out += "│ CPU  $cpu%`n│ RAM  $ram%`n│ DISK $disk% (${drvLet}:)`n│`n"
+    $out += "│ Jobs: $($jStats.Running) RUNNING`n│ Uptime: $upStr`n│ Updated: $((Get-Date).ToString('HH:mm:ss'))`n└─────────────────────────────┘"
+    return $out
+}
+
+function Format-Bytes([double]$Bytes) {
+    if ($Bytes -gt 1GB) { return "$([math]::Round($Bytes/1GB, 2)) GB" }
+    if ($Bytes -gt 1MB) { return "$([math]::Round($Bytes/1MB, 2)) MB" }
+    return "$([math]::Round($Bytes/1KB, 2)) KB"
+}
+
+function Get-ProgressBar([double]$Percent) {
+    $filled = [math]::Floor($Percent / 10); $empty = 10 - $filled
+    return ("█" * $filled) + ("░" * $empty)
+}
+
+function Format-ETA([double]$Speed, [double]$Remaining) {
+    if ($Speed -le 0) { return "∞" }
+    $secs = [math]::Round($Remaining / $Speed)
+    $ts = [timespan]::fromseconds($secs)
+    if ($ts.Hours -gt 0) { return "{0}h {1}m" -f $ts.Hours, $ts.Minutes }
+    if ($ts.Minutes -gt 0) { return "{0}m {1}s" -f $ts.Minutes, $ts.Seconds }
+    return "{0}s" -f $ts.Seconds
+}
+
+function Generate-JobUI {
+    param([string]$jId, $info)
+    $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+    $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+    $progBar = Get-ProgressBar -Percent $pct
+    $doneStr = Format-Bytes -Bytes $done; $totalStr = Format-Bytes -Bytes $total
+    $spdStr = Format-Bytes -Bytes $speed
+    $etaStr = Format-ETA -Speed $speed -Remaining ($total - $done)
+    return "📥 <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`n$doneStr / $totalStr`nSpeed: $spdStr/s`nETA: $etaStr`nStatus: $($info.status.ToUpper())"
+}
+
+function Route-Command {
+    param ([string]$CommandText)
+    $cleanCommand = $CommandText.Trim() -replace '@\S+', ''
+    $parts = $cleanCommand -split '\s+', 2
+    $cmd = $parts[0].ToLower()
+    $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+    
+    if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
+        switch ($cmd) {
+            "/ping" { Send-TelegramMessage "✅ System is ONLINE and listening." }
+            "/help" { Send-TelegramMessage "🤖 <b>Commands:</b>`n/download URL - Start download`n/downloads - View queue`n/workspace - Cloud State`n/backup - Force Cloud Sync`n/relay - Hand off to next runner`n/cancel JOB-ID - Stop task`n/stop - Terminate workflow`n/rdp - Connection Info" }
+            "/cancel" {
+                $target = $args.ToUpper().Trim()
+                if (-not $target) {
+                    Send-TelegramMessage "⚠️ Provide a Job ID (e.g., `/cancel JOB-001` or `/cancel GID-xxxx`)."
+                    break
+                }
+                $global:JobManager_CancelDict[$target] = $true
+                
+                if ($target -match "^GID-(.+)") {
+                    $gid = $matches[1]
+                    $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
+                    Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+                }
+                
+                Send-TelegramMessage "🛑 Cancellation requested for <code>$target</code>"
+            }
+            "/stop" {
+                Send-TelegramMessage "🛑 <b>WORKFLOW TERMINATED</b>`nThe GitHub Actions runner is shutting down immediately."
+                Write-BotLog "User requested immediate shutdown via /stop." "WARN"
+                try { Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset" -Method Get -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null } catch {}
+                exit 0
+            }
+            "/rdp" {
+                $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+                $tsIp = if (Test-Path $tsPath) { (& $tsPath ip -4 2>$null).Trim() } else { $null }
+                
+                if ($tsIp) {
+                    $msg = "🖥️ <b>RDP CONNECTION INFO (Self-Destruct in 60s)</b>`n━━━━━━━━━━━━━━━━━━━━`n"
+                    $msg += "🟢 <b>Status:</b> SECURE VPN ONLINE`n"
+                    $msg += "🌐 <b>IP Address:</b> <code>$tsIp</code>`n"
+                    $msg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
+                    $msg += "🔑 <b>Pass:</b> <code>$env:RDP_PASSWORD</code>`n`n"
+                    $msg += "<i>Double-click 'mount.vbs' on the desktop to access Z:!</i>"
+                    
+                    $mId = Send-TelegramMessage $msg
+                    # [NEW] 60-Second Auto-Destruct Timer
+                    if ($mId) { $global:DeleteQueue[$mId] = (Get-Date).AddSeconds(60) }
+                } else {
+                    Send-TelegramMessage "⚠️ <b>Error:</b> Tailscale VPN is not running or IP could not be retrieved."
+                }
+            }
+            "/workspace" {
+                $drvLet = $WorkspacePath.Substring(0,1)
+                $size = Format-Bytes ((Get-ChildItem $WorkspacePath -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum)
+                $rcloneStat = if (Test-Path "$WorkspacePath\rclone.exe") { "🟢 CONFIGURED" } else { "🔴 MISSING" }
+                Send-TelegramMessage "☁️ <b>WORKSPACE STATE</b>`n━━━━━━━━━━━━━━━━━━━━`nPath: <code>$WorkspacePath</code>`nLocal Size: $size`nRclone: $rcloneStat`n`n<i>Use /backup to sync to CloudVault.</i>"
+            }
+            "/downloads" {
+                try {
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellActive`" }"
+                    $res = Invoke-RestMethod -Uri "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc" -Method Post -Body $body -ContentType "application/json"
+                    if ($res.result.Count -eq 0) { Send-TelegramMessage "📥 <b>DOWNLOADS</b>`nNo active downloads."; return }
+                    
+                    foreach ($d in $res.result) {
+                        $info = $d; $info | Add-Member -MemberType NoteProperty -Name "jobType" -Value "download" -Force
+                        $jId = "GID-$($d.gid)"
+                        $global:JobManager_ProgressDict[$jId] = $info
+                        
+                        $markup = @{ inline_keyboard = @( ,( 
+                            @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                            @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                        ) ) }
+                        
+                        Send-TelegramMessage (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup | Out-Null
+                    }
+                } catch { Send-TelegramMessage "⚠️ Cannot reach aria2 engine." }
+            }
+            "/status" {
+                $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                Send-TelegramMessage (Get-LiveDashboardText) -ReplyMarkup $markup | Out-Null
             }
         }
-
-        # Now it is safe to assign them to the environment variables
-        $env:TELEGRAM_BOT_TOKEN = $vault.telegram_bot_token.Trim()
-        $env:TELEGRAM_CHAT_ID   = $vault.telegram_chat_id.Trim()
-        $env:TELEGRAM_ADMIN_ID  = $vault.telegram_admin_id.Trim()
-        $env:TAILSCALE_AUTH_KEY = $vault.tailscale_auth_key.Trim()
-        $env:RDP_USERNAME       = $vault.rdp_username.Trim()
-        $env:RDP_PASSWORD       = $vault.rdp_password.Trim()
-        $env:GH_TOKEN           = $vault.gh_token.Trim()
-
-        "TELEGRAM_BOT_TOKEN=$($env:TELEGRAM_BOT_TOKEN)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TELEGRAM_CHAT_ID=$($env:TELEGRAM_CHAT_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TELEGRAM_ADMIN_ID=$($env:TELEGRAM_ADMIN_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "TAILSCALE_AUTH_KEY=$($env:TAILSCALE_AUTH_KEY)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "RDP_USERNAME=$($env:RDP_USERNAME)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "RDP_PASSWORD=$($env:RDP_PASSWORD)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        "GH_TOKEN=$($env:GH_TOKEN)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
-        Write-Log "Secrets loaded, masked, and injected successfully!" "SUCCESS"
-    } else {
-        Write-Log "CRITICAL: System\secrets.json not found in Google Drive!" "ERROR"
-        exit 1
+        return
     }
 
-    # Deploy user's custom VBS files to Desktop
-    $desktopPath = "C:\Users\Public\Desktop"
-    if (-not (Test-Path $desktopPath)) { New-Item -ItemType Directory -Path $desktopPath -Force | Out-Null }
-    
-    $mountVbs = Join-Path $workspacePath "System\mount.vbs"
-    $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
-    
-    if (Test-Path $mountVbs) {
-        Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
-        Write-Log "Deployed custom mount.vbs to Desktop." "SUCCESS"
+    if ($Config.telegram.commands.jobs -contains $cmd) {
+        $jobId = "JOB-$($JobCounter.ToString('000'))"
+        $script:JobCounter++
+        
+        $markup = @{ inline_keyboard = @( ,( 
+            @{ text="🔄 Refresh"; callback_data="refresh_$jobId" },
+            @{ text="🛑 Cancel"; callback_data="cancel_$jobId" }
+        ) ) }
+        
+        $msgId = Send-TelegramMessage "📥 Job <code>$jobId</code> queued.`nCommand: $cmd" -ReplyMarkup $markup
+        if ($msgId) { $global:JobMessageMap[$jobId] = @{ MessageId = $msgId; LastUpdate = Get-Date; LastConsoleMsg = "" } }
+        
+        switch ($cmd) {
+            "/download" {
+                $sb = {
+                    param($JobId, $Url, $RpcPort, $CancelDict, $ProgressDict)
+                    $rpc = "http://127.0.0.1:$RpcPort/jsonrpc"
+                    $safeUrl = $Url -replace '"', '\"'
+                    
+                    $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.addUri`", `"params`": [[`"$safeUrl`"]] }"
+                    $res = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
+                    $gid = $res.result
+                    if (-not $gid) { throw "Failed to get GID from aria2." }
+                    
+                    $unpauseBody = "{ `"jsonrpc`": `"2.0`", `"id`": `"2`", `"method`": `"aria2.unpauseAll`" }"
+                    Invoke-RestMethod -Uri $rpc -Method Post -Body $unpauseBody -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
+                    
+                    $completed = $false
+                    while (-not $completed) {
+                        Start-Sleep -Seconds 1
+                        if ($CancelDict.ContainsKey($JobId)) {
+                            $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
+                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
+                            throw "Cancelled by user."
+                        }
+                        $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.tellStatus`", `"params`": [`"$gid`"] }"
+                        $statusRes = Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json"
+                        $info = $statusRes.result
+                        $info | Add-Member -MemberType NoteProperty -Name "jobType" -Value "download" -Force
+                        $ProgressDict[$JobId] = $info
+                        
+                        if ($info.status -eq "complete" -or $info.status -eq "error" -or $info.status -eq "removed" -or $info.status -eq "paused") {
+                            $completed = $true
+                            if ($info.status -eq "error") { throw "Aria2 Error: $($info.errorCode)" }
+                            if ($info.status -eq "paused") { return "⏸️ Download paused safely for Workspace Relay." }
+                        }
+                    }
+                    return "✅ Download successfully completed!"
+                }
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($jobId, $args, $Config.aria2.rpcPort, $global:JobManager_CancelDict, $global:JobManager_ProgressDict)
+            }
+            "/backup" {
+                $sb = {
+                    param($JobId, $WsPath, $CloudName, $RootName, $CorePath, $RpcPort, $ProgDict)
+                    . (Join-Path $CorePath "RelayManager.ps1")
+                    return Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort -JobId $JobId -ProgDict $ProgDict
+                }
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($jobId, $WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $PSScriptRoot, $Config.aria2.rpcPort, $global:JobManager_ProgressDict)
+            }
+            "/relay" {
+                $sb = {
+                    param($JobId, $WsPath, $CloudName, $RootName, $Repo, $Token, $CorePath, $RpcPort, $ProgDict)
+                    . (Join-Path $CorePath "RelayManager.ps1")
+                    $syncRes = Sync-CloudWorkspace -WsPath $WsPath -CloudName $CloudName -RootName $RootName -RpcPort $RpcPort -JobId $JobId -ProgDict $ProgDict
+                    $relayRes = Invoke-RunnerRelay -Repo $Repo -Token $Token -JobId $JobId -ProgDict $ProgDict
+                    return "$syncRes`n$relayRes`n`n⚠️ Shutting down current runner in 10 seconds to allow handoff."
+                }
+                Submit-Job -JobId $jobId -CommandName $cmd -ScriptBlock $sb -ArgumentList @($jobId, $WorkspacePath, $Config.relay.cloudDriveName, $Config.storage.workspaceRootName, $env:GITHUB_REPO, $env:GH_TOKEN, $PSScriptRoot, $Config.aria2.rpcPort, $global:JobManager_ProgressDict)
+            }
+        }
     }
-    if (Test-Path $unmountVbs) {
-        Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
-        Write-Log "Deployed custom unmount.vbs to Desktop." "SUCCESS"
-    }
-    # ====================================================================
+}
 
-    # RDP Initialization
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
-    Enable-NetFirewallRule -DisplayGroup $Config.rdp.firewallGroupName -ErrorAction SilentlyContinue | Out-Null
-    if ((Get-Service $Config.rdp.serviceName).Status -ne 'Running') { Start-Service $Config.rdp.serviceName }
-    if ($env:RDP_USERNAME -and $env:RDP_PASSWORD) {
-        $secPass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-        if (-not (Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue)) {
-            New-LocalUser -Name $env:RDP_USERNAME -Password $secPass -AccountNeverExpires -PasswordNeverExpires | Out-Null
-            Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
+Send-TelegramMessage "🚀 <b>BotService Started</b>`nReady for commands." | Out-Null
+
+while (-not $global:ShutdownRequested) {
+    try {
+        $updates = Invoke-RestMethod -Uri "$ApiUrl/getUpdates?offset=$global:Offset&timeout=5" -Method Get -TimeoutSec 15
+        if ($updates.ok -and $updates.result.Count -gt 0) {
+            foreach ($update in $updates.result) {
+                $global:Offset = $update.update_id + 1
+                
+                # INLINE BUTTON LOGIC (Manual UI Refreshing)
+                if ($update.callback_query) {
+                    $cb = $update.callback_query
+                    $cbData = $cb.data
+                    $mId = $cb.message.message_id
+                    
+                    Invoke-RestMethod -Uri "$ApiUrl/answerCallbackQuery" -Method Post -Body @{callback_query_id=$cb.id} -ErrorAction SilentlyContinue | Out-Null
+                    
+                    if ($cbData -eq "refresh_dash") {
+                        $markup = @{ inline_keyboard = @( ,( @{ text="🔄 Refresh Dashboard"; callback_data="refresh_dash" } ) ) }
+                        Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ReplyMarkup $markup
+                    }
+                    elseif ($cbData -match "^refresh_(.+)") {
+                        $jId = $matches[1]
+                        if ($global:JobManager_ProgressDict.ContainsKey($jId)) {
+                            $info = $global:JobManager_ProgressDict[$jId]
+                            $markup = @{ inline_keyboard = @( ,( 
+                                @{ text="🔄 Refresh"; callback_data="refresh_$jId" },
+                                @{ text="🛑 Cancel"; callback_data="cancel_$jId" }
+                            ) ) }
+                            
+                            if ($info.type -eq "sys") {
+                                $pct = $info.pct
+                                $progBar = Get-ProgressBar -Percent $pct
+                                $text = "⚙️ <b>$jId</b>`n━━━━━━━━━━━━━━━━━━━━`n$progBar $pct%`nStatus: $($info.msg)"
+                                Edit-TelegramMessage -MessageId $mId -Text $text -ReplyMarkup $markup
+                            } else {
+                                Edit-TelegramMessage -MessageId $mId -Text (Generate-JobUI -jId $jId -info $info) -ReplyMarkup $markup
+                            }
+                        }
+                    }
+                    elseif ($cbData -match "^cancel_(.+)") {
+                        $jId = $matches[1]
+                        $global:JobManager_CancelDict[$jId] = $true
+                        
+                        if ($jId -match "^GID-(.+)") {
+                            $gid = $matches[1]
+                            $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
+                            $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
+                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
+                        }
+                        
+                        Edit-TelegramMessage -MessageId $mId -Text "🛑 Cancellation requested for <code>$jId</code>..."
+                    }
+                    continue
+                }
+
+                $msg = $update.message
+                if (-not $msg.text) { continue }
+                if ([string]$msg.chat.id -ne $AllowedChatId -or [string]$msg.from.id -ne $AdminUserId) { continue }
+                Route-Command -Command $msg.text
+            }
+        }
+    } catch { 
+        Write-BotLog "API Polling Error: $($_.Exception.Message)" "WARN"
+        Start-Sleep -Seconds 2
+    }
+
+    $jobEvents = Invoke-JobManagerTick
+    foreach ($event in $jobEvents) {
+        if ($global:JobMessageMap.ContainsKey($event.JobId)) {
+            $msgId = $global:JobMessageMap[$event.JobId].MessageId
+            if ($event.Event -eq 'COMPLETED') { 
+                Edit-TelegramMessage -MessageId $msgId -Text "✅ <b>$($event.JobId) COMPLETED</b>`n`n$($event.Result)" 
+                if ($event.Command -eq '/relay') { 
+                    Start-Sleep -Seconds 10
+                    $global:ShutdownRequested = $true 
+                }
+            }
+            elseif ($event.Event -eq 'FAILED') { Edit-TelegramMessage -MessageId $msgId -Text "❌ <b>$($event.JobId) FAILED</b>`n`nReason: $($event.Result)" }
+            $global:JobMessageMap.Remove($event.JobId)
         }
     }
 
-    # Tailscale Setup
-    if ($env:TAILSCALE_AUTH_KEY) {
-        Write-Log "Installing Tailscale VPN via Chocolatey..." "INFO"
-        choco install tailscale -y --no-progress | Out-Null
-        $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
-        if (Test-Path $tsPath) {
-            Write-Log "Authenticating Tailscale network..." "INFO"
-            & $tsPath up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="RDP-Worker-$env:GITHUB_RUN_ID" --reset
-            
-            $tsIp = (& $tsPath ip -4 2>$null).Trim()
-            Write-Log "Tailscale connected successfully!" "SUCCESS"
-            Write-Log "==========================================" "SUCCESS"
-            Write-Log "🖥️ RDP IP ADDRESS: $tsIp" "SUCCESS"
-            Write-Log "==========================================" "SUCCESS"
-        } else {
-            Write-Log "Tailscale executable not found." "ERROR"
+    # Process Message Auto-Delete Queue (e.g., /rdp credentials)
+    $now = Get-Date
+    foreach ($dId in @($global:DeleteQueue.Keys)) {
+        if ($now -ge $global:DeleteQueue[$dId]) {
+            Invoke-RestMethod -Uri "$ApiUrl/deleteMessage" -Method Post -Body @{chat_id=$AllowedChatId; message_id=$dId} -ErrorAction SilentlyContinue | Out-Null
+            $global:DeleteQueue.Remove($dId)
         }
     }
 
-    # aria2 Initialization
-    $aria2Path = Join-Path $workspacePath "aria2"
-    if (-not (Test-Path $aria2Path)) {
-        New-Item -ItemType Directory -Path $aria2Path | Out-Null
-        $aria2Zip = "$env:TEMP\aria2.zip"
-        Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile $aria2Zip
-        Expand-Archive -Path $aria2Zip -DestinationPath $aria2Path -Force
+    if ((Get-Date) -ge $global:LastConsolePrint.AddSeconds(10)) {
+        foreach ($jId in @($global:JobManager_ProgressDict.Keys)) {
+            $info = $global:JobManager_ProgressDict[$jId]
+            if ($info.type -eq "sys") {
+                Write-BotLog "[$jId] SYS Progress: $($info.pct)% - $($info.msg)" "INFO"
+            } elseif ($info.jobType -eq "download") {
+                $total = [double]$info.totalLength; $done = [double]$info.completedLength; $speed = [double]$info.downloadSpeed
+                $pct = if ($total -gt 0) { [math]::Round(($done / $total) * 100, 1) } else { 0 }
+                $spdStr = Format-Bytes -Bytes $speed
+                Write-BotLog "[$jId] DL Progress: $pct% | Speed: $spdStr/s" "INFO"
+            }
+        }
+        $global:LastConsolePrint = Get-Date
     }
-    
-    $sessionFile = Join-Path $statePath "aria2.session"
-    if (-not (Test-Path $sessionFile)) { New-Item -ItemType File -Path $sessionFile -Force | Out-Null }
 
-    $aria2Exe = (Get-ChildItem -Path $aria2Path -Filter "aria2c.exe" -Recurse).FullName
-    $ariaArgs = "--enable-rpc --rpc-listen-all=false --rpc-listen-port=$($Config.aria2.rpcPort) --dir=`"$downloadsPath`" --max-concurrent-downloads=$($Config.aria2.maxConcurrent) --split=$($Config.aria2.split) --continue=true --save-session=`"$sessionFile`" --input-file=`"$sessionFile`""
-    Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
+    if ((Get-Date) -ge $StartTime.AddMinutes($Config.relay.autoRelayMinutes)) {
+        Write-BotLog "Auto-Relay time reached (340 mins). Triggering handoff." "WARN"
+        Send-TelegramMessage "⚠️ <b>RUNNER TIME LIMIT APPROACHING (340 MINS)</b>`nTriggering automatic workspace relay..."
+        Route-Command -Command "/relay"
+        $StartTime = (Get-Date).AddDays(1) 
+    }
+}
 
-    "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 8.9 Bootstrap Complete." "SUCCESS"
-    
-    $global:LASTEXITCODE = 0
-
-} catch { Write-Log $_.Exception.Message "ERROR"; exit 1 }
+Write-BotLog "Shutdown requested. Exiting BotService safely." "SUCCESS"
+exit 0
