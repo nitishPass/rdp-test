@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - RelayManager (Phase 8.6 - System Vault Protection)
+    RDP Manager - RelayManager (Phase 11.0 - Registry Export & Large Archive Optimization)
 #>
 
 function Sync-CloudWorkspace {
@@ -18,6 +18,19 @@ function Sync-CloudWorkspace {
         Start-Sleep -Seconds 2
     } catch { }
 
+    # ==========================================================
+    # REGISTRY STATE EXPORT TRIGGER
+    # ==========================================================
+    Set-Status "Exporting User Registry State..." 20
+    if (Get-ScheduledTask -TaskName "RDPStateExport" -ErrorAction SilentlyContinue) {
+        Start-ScheduledTask -TaskName "RDPStateExport"
+        $timeout = 0
+        while ((Get-ScheduledTask -TaskName "RDPStateExport").State -eq 'Running' -and $timeout -lt 30) {
+            Start-Sleep -Seconds 1
+            $timeout++
+        }
+    }
+
     Set-Status "Archiving System Logs..." 25
     $logDest = Join-Path $WsPath "LogsArchive"
     if (-not (Test-Path $logDest)) { New-Item -ItemType Directory -Path $logDest | Out-Null }
@@ -31,18 +44,23 @@ function Sync-CloudWorkspace {
     $confPath = "C:\Users\Public\rclone.conf"
     $rcloneLog = Join-Path $WsPath "State\rclone_sync.log"
     
-    Set-Status "Pushing files to CloudVault (Gigabit Mode Active)..." 50
+    Set-Status "Pushing files to CloudVault (Gigabit Multi-Thread Mode)..." 50
     
-    # [FIX] --exclude "System/**" ensures your master scripts/secrets in Google Drive are NEVER overwritten!
+    # ==========================================================
+    # MASSIVE ARCHIVE OPTIMIZATION (8GB+ Files)
+    # ==========================================================
     $rcloneArgs = @(
         "copy", $WsPath, $cloudTarget, 
         "--config", $confPath, 
         "--exclude", "State/bot.log", 
         "--exclude", "State/rclone_sync.log", 
         "--exclude", "System/**",
-        "--transfers", "8", 
-        "--checkers", "8",
-        "--drive-chunk-size", "512M",
+        "--transfers", "16", 
+        "--checkers", "16",
+        "--drive-chunk-size", "256M",
+        "--multi-thread-streams", "8",
+        "--multi-thread-cutoff", "256M",
+        "--fast-list",
         "--retries", "3", 
         "--local-no-check-updated", 
         "--log-file", $rcloneLog, 
@@ -59,7 +77,7 @@ function Sync-CloudWorkspace {
     Copy-Item -Path $rcloneLog -Destination (Join-Path $logDest "rclone_$timeStamp.log") -ErrorAction SilentlyContinue
 
     Set-Status "Cloud Sync Complete!" 100
-    return "✅ Workspace & Logs successfully synchronized to Cloud Vault."
+    return "✅ Workspace & Software State successfully synchronized to Cloud Vault."
 }
 
 function Invoke-RunnerRelay {
