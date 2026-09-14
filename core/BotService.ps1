@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - BotService (Phase 10.8 - Clean UI Watchdog)
+    RDP Manager - BotService (Phase 11.1 - Silent 'Not Modified' Handling)
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -102,9 +102,12 @@ function Edit-TelegramMessage {
         $jsonBody = $payload | ConvertTo-Json -Depth 10 -Compress
         Invoke-RestMethod -Uri "$ApiUrl/editMessageText" -Method Post -Body $jsonBody -ContentType "application/json" | Out-Null
     } catch { 
-        $errMsg = $_.Exception.Message
-        if ($_.ErrorDetails) { $errMsg += " | Telegram API: " + $_.ErrorDetails.Message }
-        Write-BotLog "Telegram Edit Error: $errMsg" "ERROR" 
+        $errText = if ($_.ErrorDetails) { [string]$_.ErrorDetails.Message } else { [string]$_.Exception.Message }
+        if ($errText -match "message is not modified") {
+            # Ignore harmless redundant updates
+            return
+        }
+        Write-BotLog "Telegram Edit Error: $errText" "ERROR" 
     }
 }
 
@@ -159,7 +162,6 @@ function Invoke-VFSWatchdog {
             Stop-Process -Name "rclone" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
 
-            # [FIX] VFS Watchdog natively executes the standard mount.vbs
             $mountVbs = "C:\Users\Public\Desktop\mount.vbs"
             if (Test-Path $mountVbs) {
                 Start-Process "wscript.exe" -ArgumentList "`"$mountVbs`"" -WindowStyle Hidden
@@ -217,7 +219,7 @@ function Route-Command {
     $cleanCommand = $CommandText.Trim() -replace '@\S+', ''
     $parts = $cleanCommand -split '\s+', 2
     $cmd = $parts[0].ToLower()
-    $args = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+    $args = if ($parts.Count -gt 1) { $parts } else { "" }
     
     if ($Config.telegram.commands.lightweight -contains $cmd -or $cmd -eq "/stop" -or $cmd -eq "/rdp") {
         switch ($cmd) {
@@ -232,7 +234,7 @@ function Route-Command {
                 $global:JobManager_CancelDict[$target] = $true
                 
                 if ($target -match "^GID-(.+)") {
-                    $gid = $matches[1]
+                    $gid = $matches
                     $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
                     $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
                     Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
@@ -378,7 +380,7 @@ $bootMsg += "👤 <b>User:</b> <code>$env:RDP_USERNAME</code>`n"
 $bootMsg += "☁️ <b>CloudVault:</b> <code>Auto-Mounting (Z:)</code>`n`n"
 $bootMsg += "<i>System has successfully initialized. Type /help to view commands.</i>"
 Send-TelegramMessage $bootMsg -ParseMode "HTML" | Out-Null
-Write-BotLog "=== BOT SERVICE (PHASE 10.8) INITIALIZED ===" "INFO"
+Write-BotLog "=== BOT SERVICE (PHASE 11.1) INITIALIZED ===" "INFO"
 
 while (-not $global:ShutdownRequested) {
     try {
@@ -399,7 +401,7 @@ while (-not $global:ShutdownRequested) {
                         Edit-TelegramMessage -MessageId $mId -Text (Get-LiveDashboardText) -ParseMode "" -ReplyMarkup $markup
                     }
                     elseif ($cbData -match "^refresh_(.+)") {
-                        $jId = $matches[1]
+                        $jId = $matches
                         if ($global:JobManager_ProgressDict.ContainsKey($jId)) {
                             $info = $global:JobManager_ProgressDict[$jId]
                             $markup = New-SingleRowKeyboard -Buttons @(
@@ -418,14 +420,14 @@ while (-not $global:ShutdownRequested) {
                         }
                     }
                     elseif ($cbData -match "^cancel_(.+)") {
-                        $jId = $matches[1]
+                        $jId = $matches
                         $global:JobManager_CancelDict[$jId] = $true
                         
                         if ($jId -match "^GID-(.+)") {
-                            $gid = $matches[1]
+                            $gid = $matches
                             $rpc = "http://127.0.0.1:$($Config.aria2.rpcPort)/jsonrpc"
                             $body = "{ `"jsonrpc`": `"2.0`", `"id`": `"1`", `"method`": `"aria2.remove`", `"params`": [`"$gid`"] }"
-                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" | Out-Null
+                            Invoke-RestMethod -Uri $rpc -Method Post -Body $body -ContentType "application/json" -ErrorAction SilentlyContinue | Out-Null
                         }
                         
                         Edit-TelegramMessage -MessageId $mId -Text "🛑 Cancellation requested for <code>$jId</code>..." -ParseMode "HTML"
