@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 10.8 - Auto-Closing Terminals & Clean Auto-Mount)
+    RDP Manager - Bootstrap (Phase 11.0 - Dynamic State Injection & Junctions)
 #>
 
 [CmdletBinding()]
@@ -100,10 +100,9 @@ try {
     }
 
     # ====================================================================
-    # POST-LOGIN INJECTION (Self-Cleaning Terminals)
+    # POST-LOGIN INJECTION (Debloat, Software, and STATE RESTORATION)
     # ====================================================================
-    Write-Log "Injecting Parallel Admin Setup Scripts..." "INFO"
-    
+    Write-Log "Injecting Parallel Admin Setup & State Scripts..." "INFO"
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -ErrorAction SilentlyContinue
 
     $desktopPath = "C:\Users\Public\Desktop"
@@ -114,14 +113,14 @@ try {
 
     $debloatPs1 = "$desktopPath\01_GreatDebloat.ps1"
     $installPs1 = "$desktopPath\02_SoftwareInstaller.ps1"
+    $restorePs1 = "$desktopPath\03_StateRestore.ps1"
     $startupVbs = "$startupPath\00_Init_RDP.vbs"
 
     # RED TERMINAL: The Great Debloat
     $debloatContent = @'
-$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 1/2 - The Great Debloat"
+$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 1/3 - The Great Debloat"
 $Host.UI.RawUI.BackgroundColor = "DarkRed"
 Clear-Host
-
 Write-Host "================================================================" -ForegroundColor White
 Write-Host "   RECLAIMING C: DRIVE SPACE (ADMINISTRATOR)                    " -ForegroundColor White
 Write-Host "================================================================`n" -ForegroundColor White
@@ -140,10 +139,7 @@ if (Test-Path $softwareFile) {
         }
     }
     Write-Host "`n[+] Cleanup Complete! Removed $totalCleaned bloat directories." -ForegroundColor Green
-} else {
-    Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
 }
-
 Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White
 Start-Sleep -Seconds 5
 Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -154,10 +150,9 @@ Stop-Process -Id $PID
 
     # BLUE TERMINAL: Software Installer
     $installContent = @'
-$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 2/2 - Software Installer"
+$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 2/3 - Software Installer"
 $Host.UI.RawUI.BackgroundColor = "DarkBlue"
 Clear-Host
-
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "   DEPLOYING FUTURE-PROOF TECH STACK (ADMINISTRATOR)            " -ForegroundColor White
 Write-Host "================================================================`n" -ForegroundColor Cyan
@@ -177,13 +172,8 @@ if (Test-Path $softwareFile) {
         Write-Host "[+] Installing: $pkgString`n" -ForegroundColor Cyan
         Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --confirm --force" -Wait -NoNewWindow
         Write-Host "`n[+] Software stack deployed!" -ForegroundColor Green
-    } else {
-        Write-Host "[-] No enabled packages found." -ForegroundColor DarkGray
     }
-} else {
-    Write-Host "[!] software.json not found in CloudVault!" -ForegroundColor Red
 }
-
 Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor Cyan
 Start-Sleep -Seconds 5
 Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -192,34 +182,95 @@ Stop-Process -Id $PID
     $installContent = $installContent -replace '\{WORKSPACE_PATH\}', $workspacePath
     Set-Content -Path $installPs1 -Value $installContent
 
-    # Master VBS Launcher (Triggers both silently on boot)
+    # GREEN TERMINAL: State & AppData Restoration
+    $restoreContent = @'
+$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 3/3 - State Restoration"
+$Host.UI.RawUI.BackgroundColor = "DarkGreen"
+Clear-Host
+Write-Host "================================================================" -ForegroundColor White
+Write-Host "   RESTORING SOFTWARE STATE & APPDATA JUNCTIONS                 " -ForegroundColor White
+Write-Host "================================================================`n" -ForegroundColor White
+
+$softwareFile = "{WORKSPACE_PATH}\System\software.json"
+$stateDir = "{WORKSPACE_PATH}\State"
+$appDataState = "$stateDir\AppData"
+$regState = "$stateDir\Registry"
+
+if (-not (Test-Path $appDataState)) { New-Item -ItemType Directory -Path $appDataState -Force | Out-Null }
+if (-not (Test-Path $regState)) { New-Item -ItemType Directory -Path $regState -Force | Out-Null }
+
+if (Test-Path $softwareFile) {
+    $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+    
+    Write-Host "[1/2] Processing AppData Directory Junctions..." -ForegroundColor Yellow
+    if ($swData.state_management.appdata_folders) {
+        foreach ($folder in $swData.state_management.appdata_folders) {
+            $targetPath = Join-Path $appDataState $folder
+            $linkPath = Join-Path "$env:USERPROFILE\AppData" $folder
+            
+            if (-not (Test-Path $targetPath)) { New-Item -ItemType Directory -Path $targetPath -Force | Out-Null }
+            
+            if (Test-Path $linkPath) {
+                $item = Get-Item $linkPath -Force
+                if ($item.LinkType -ne "Junction") {
+                    Write-Host "      [!] Merging existing data: $folder" -ForegroundColor Cyan
+                    Copy-Item -Path "$linkPath\*" -Destination $targetPath -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $linkPath -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            
+            if (-not (Test-Path $linkPath)) {
+                Write-Host "      [+] Linking $folder -> CloudVault" -ForegroundColor Green
+                New-Item -ItemType Junction -Path $linkPath -Target $targetPath -Force | Out-Null
+            } else {
+                Write-Host "      [v] Verified: $folder" -ForegroundColor DarkGray
+            }
+        }
+    }
+
+    Write-Host "`n[2/2] Restoring Registry Hives..." -ForegroundColor Yellow
+    if ($swData.state_management.registry_keys) {
+        foreach ($key in $swData.state_management.registry_keys) {
+            $safeName = $key -replace '[\\/]', '_'
+            $regFile = "$regState\$safeName.reg"
+            if (Test-Path $regFile) {
+                Write-Host "      [+] Importing: $key" -ForegroundColor Green
+                Start-Process "reg.exe" -ArgumentList "import `"$regFile`"" -Wait -WindowStyle Hidden
+            } else {
+                Write-Host "      [-] No backup found for: $key" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White
+Start-Sleep -Seconds 5
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+Stop-Process -Id $PID
+'@
+    $restoreContent = $restoreContent -replace '\{WORKSPACE_PATH\}', $workspacePath
+    Set-Content -Path $restorePs1 -Value $restoreContent
+
+    # Master VBS Launcher
     $vbsContent = "Set UAC = CreateObject(""Shell.Application"")`r`n"
     $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$debloatPs1"" & Chr(34), """", ""runas"", 1`r`n"
     $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$installPs1"" & Chr(34), """", ""runas"", 1`r`n"
+    $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$restorePs1"" & Chr(34), """", ""runas"", 1`r`n"
     $vbsContent += "Set objFSO = CreateObject(""Scripting.FileSystemObject"")`r`n"
     $vbsContent += "strScript = Wscript.ScriptFullName`r`n"
     $vbsContent += "objFSO.DeleteFile(strScript)`r`n"
     Set-Content -Path $startupVbs -Value $vbsContent
 
     # ====================================================================
-    # NATIVE DESKTOP MOUNT SCRIPTS (NO ADMIN WRAPPER)
+    # NATIVE DESKTOP MOUNT SCRIPTS
     # ====================================================================
     $mountVbs = Join-Path $workspacePath "System\mount.vbs"
     $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
-    
     if (Test-Path $mountVbs) {
-        # 1. Clean Desktop Mount
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
-        
-        # 2. Native Auto-Mount in Startup (Runs exactly as you tested it)
         $autoMount = "$startupPath\mount.vbs"
         Copy-Item -Path $mountVbs -Destination $autoMount -Force
     }
-    
-    if (Test-Path $unmountVbs) {
-        # 1. Clean Desktop Unmount
-        Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force
-    }
+    if (Test-Path $unmountVbs) { Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force }
 
     # RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
@@ -233,6 +284,34 @@ Stop-Process -Id $PID
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
         }
     }
+
+    # ====================================================================
+    # REGISTRY EXPORTER SCHEDULED TASK (Runs natively in user session)
+    # ====================================================================
+    Write-Log "Configuring Remote Registry Exporter Task..." "INFO"
+    $exporterPs1 = Join-Path $workspacePath "System\StateExporter.ps1"
+    $exporterContent = @'
+$softwareFile = "{WORKSPACE_PATH}\System\software.json"
+$regState = "{WORKSPACE_PATH}\State\Registry"
+if (-not (Test-Path $regState)) { New-Item -ItemType Directory -Path $regState -Force | Out-Null }
+if (Test-Path $softwareFile) {
+    $swData = Get-Content $softwareFile -Raw | ConvertFrom-Json
+    if ($swData.state_management.registry_keys) {
+        foreach ($key in $swData.state_management.registry_keys) {
+            $safeName = $key -replace '[\\/]', '_'
+            $regFile = "$regState\$safeName.reg"
+            Start-Process "reg.exe" -ArgumentList "export `"$key`" `"$regFile`" /y" -Wait -WindowStyle Hidden
+        }
+    }
+}
+'@
+    $exporterContent = $exporterContent -replace '\{WORKSPACE_PATH\}', $workspacePath
+    Set-Content -Path $exporterPs1 -Value $exporterContent
+    
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$exporterPs1`""
+    $principal = New-ScheduledTaskPrincipal -UserId $env:RDP_USERNAME -LogonType Interactive -RunLevel Highest
+    $task = New-ScheduledTask -Action $action -Principal $principal
+    Register-ScheduledTask -TaskName "RDPStateExport" -InputObject $task -Force | Out-Null
 
     # Tailscale Setup
     if ($env:TAILSCALE_AUTH_KEY) {
@@ -262,7 +341,7 @@ Stop-Process -Id $PID
     Start-Process -FilePath $aria2Exe -ArgumentList $ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" | Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 10.8 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 11.0 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
