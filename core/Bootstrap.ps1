@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 11.7 - Absolute Stability & Aggressive Cleanup)
+    RDP Manager - Bootstrap (Phase 11.8 - ZERO Foreach Loops / Absolute Stability)
 #>
 
 [CmdletBinding()]
@@ -59,7 +59,7 @@ try {
     }
 
     # ====================================================================
-    # THE SECURE VAULT UNLOCK (Spacing Bug Fixed)
+    # THE SECURE VAULT UNLOCK (FOREACH LOOP REMOVED ENTIRELY)
     # ====================================================================
     $secretsFile = Join-Path$workspacePath "System\secrets.json"
     if (Test-Path $secretsFile) {
@@ -68,8 +68,9 @@ try {
         $vault = ConvertFrom-Json -InputObject$rawVault
         $ghEnv = "$env:GITHUB_ENV"
 
+        # REWRITTEN TO A CLASSIC FOR LOOP (NO 'in' KEYWORD)
         $vaultProps =$vault.PSObject.Properties
-        foreach ($prop in$vaultProps) {
+        for ($i = 0; $i -lt$vaultProps.Count; $i++) {$prop = $vaultProps[$i]
             $val = [string]$prop.Value
             if (-not [string]::IsNullOrWhiteSpace($val)) {
                 $cleanVal =$val.Trim()
@@ -99,7 +100,7 @@ try {
     }
 
     # ====================================================================
-    # POST-LOGIN INJECTION (Parser-Proof Line Generation)
+    # POST-LOGIN INJECTION (Parser-Proof Line Generation - NO FOREACH)
     # ====================================================================
     Write-Log "Injecting Parallel Admin Setup Scripts..." "INFO"
     Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -ErrorAction SilentlyContinue
@@ -113,7 +114,7 @@ try {
     $restorePs1 = "$desktopPath\03_StateRestore.ps1"
     $startupVbs = "$startupPath\00_Init_RDP.vbs"
 
-    # RED TERMINAL: The Great Debloat (Line-by-Line to prevent parser breaks)
+    # RED TERMINAL: The Great Debloat
     $dLines = @()$dLines += "`$Host.UI.RawUI.WindowTitle = `"RDP INITIALIZATION: 1/3 - The Great Debloat`""
     $dLines += "`$Host.UI.RawUI.BackgroundColor = `"DarkRed`""
     $dLines += "Clear-Host"
@@ -126,7 +127,9 @@ try {
     $dLines += "    `$swData = ConvertFrom-Json -InputObject `$rawSw"
     $dLines += "    `$totalCleaned = 0"
     $dLines += "    if (`$swData.cleanup_paths) {"
-    $dLines += "        foreach (`$junk in `$swData.cleanup_paths) {"
+    $dLines += "        `$paths = `$swData.cleanup_paths"
+    $dLines += "        for (`$i = 0; `$i -lt `$paths.Count; `$i++) {"
+    $dLines += "            `$junk = `$paths[`$i]"
     $dLines += "            if (Test-Path `$junk) {"
     $dLines += "                Write-Host `" [X] Obliterating `$junk...`" -ForegroundColor Yellow"
     $dLines += "                Start-Process `"cmd.exe`" -ArgumentList `"/c rmdir /s /q `\`"`$junk`\`"`" -Wait -WindowStyle Hidden"
@@ -155,7 +158,9 @@ try {
     $iLines += "    `$swData = ConvertFrom-Json -InputObject `$rawSw"
     $iLines += "    `$toInstall = @()"
     $iLines += "    if (`$swData.packages) {"
-    $iLines += "        foreach (`$pkg in `$swData.packages) {"
+    $iLines += "        `$pkgs = `$swData.packages"
+    $iLines += "        for (`$i = 0; `$i -lt `$pkgs.Count; `$i++) {"
+    $iLines += "            `$pkg = `$pkgs[`$i]"
     $iLines += "            if (`$pkg.enabled -eq `$true) { `$toInstall += `$pkg.id }"
     $iLines += "        }"
     $iLines += "    }"
@@ -189,7 +194,9 @@ try {
     $rLines += "    `$swData = ConvertFrom-Json -InputObject `$rawSw"
     $rLines += "    Write-Host `"[1/2] Processing AppData Directory Junctions...`" -ForegroundColor Yellow"
     $rLines += "    if (`$swData.state_management.appdata_folders) {"
-    $rLines += "        foreach (`$folder in `$swData.state_management.appdata_folders) {"
+    $rLines += "        `$folders = `$swData.state_management.appdata_folders"
+    $rLines += "        for (`$i = 0; `$i -lt `$folders.Count; `$i++) {"
+    $rLines += "            `$folder = `$folders[`$i]"
     $rLines += "            `$targetPath = Join-Path `$appDataState `$folder"
     $rLines += "            `$linkPath = Join-Path `"`$env:USERPROFILE\AppData`" `$folder"
     $rLines += "            if (-not (Test-Path `$targetPath)) { New-Item -ItemType Directory -Path `$targetPath -Force | Out-Null }"
@@ -211,7 +218,9 @@ try {
     $rLines += "    }"
     $rLines += "    Write-Host `"``n[2/2] Restoring Registry Hives...`" -ForegroundColor Yellow"
     $rLines += "    if (`$swData.state_management.registry_keys) {"
-    $rLines += "        foreach (`$key in `$swData.state_management.registry_keys) {"
+    $rLines += "        `$keys = `$swData.state_management.registry_keys"
+    $rLines += "        for (`$i = 0; `$i -lt `$keys.Count; `$i++) {"
+    $rLines += "            `$key = `$keys[`$i]"
     $rLines += "            `$safeName = `$key -replace '[\\/]', '_'"
     $rLines += "            `$regFile = `"`$regState\`$safeName.reg`""
     $rLines += "            if (Test-Path `$regFile) {"
@@ -227,59 +236,58 @@ try {
     $rLines += "Start-Sleep -Seconds 5"
     $rLines += "Remove-Item -Path `$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue"
     $rLines += "Stop-Process -Id `$PID"
-    $rLines | Out-File -FilePath $restorePs1 -Encoding utf8
+    $rLines \vert{} Out-File -FilePath$restorePs1 -Encoding utf8
 
     # Master VBS Launcher (Safe String Quotes)
-    $vLines = @()
-    $vLines += 'Set UAC = CreateObject("Shell.Application")'
+    $vLines = @()$vLines += 'Set UAC = CreateObject("Shell.Application")'
     $vLines += 'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File " & Chr(34) & "' + $debloatPs1 + '" & Chr(34), "", "runas", 1'
     $vLines += 'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File " & Chr(34) & "' + $installPs1 + '" & Chr(34), "", "runas", 1'
     $vLines += 'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File " & Chr(34) & "' + $restorePs1 + '" & Chr(34), "", "runas", 1'
     $vLines += 'Set objFSO = CreateObject("Scripting.FileSystemObject")'
-    $vLines += 'strScript = Wscript.ScriptFullName'
-    $vLines += 'objFSO.DeleteFile(strScript)'
-    $vLines | Out-File -FilePath $startupVbs -Encoding ascii
+    $vLines += 'strScript = Wscript.ScriptFullName'$vLines += 'objFSO.DeleteFile(strScript)'
+    $vLines \vert{} Out-File -FilePath$startupVbs -Encoding ascii
 
     # ====================================================================
     # NATIVE DESKTOP MOUNT SCRIPTS
     # ====================================================================
-    $mountVbs = Join-Path $workspacePath "System\mount.vbs"
-    $unmountVbs = Join-Path $workspacePath "System\unmount.vbs"
+    $mountVbs = Join-Path$workspacePath "System\mount.vbs"
+    $unmountVbs = Join-Path$workspacePath "System\unmount.vbs"
     if (Test-Path $mountVbs) {
         Copy-Item -Path $mountVbs -Destination "$desktopPath\mount.vbs" -Force
         $autoMount = "$startupPath\mount.vbs"
-        Copy-Item -Path $mountVbs -Destination $autoMount -Force
+        Copy-Item -Path $mountVbs -Destination$autoMount -Force
     }
     if (Test-Path $unmountVbs) { Copy-Item -Path $unmountVbs -Destination "$desktopPath\unmount.vbs" -Force }
 
     # RDP Initialization
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
     Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
-    if ((Get-Service $Config.rdp.serviceName).Status -ne 'Running') { Start-Service $Config.rdp.serviceName }
-    if ($env:RDP_USERNAME -and $env:RDP_PASSWORD) {
-        $secPass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+    if ((Get-Service $Config.rdp.serviceName).Status -ne 'Running') { Start-Service$Config.rdp.serviceName }
+    if ($env:RDP_USERNAME -and$env:RDP_PASSWORD) {
+        $secPass = ConvertTo-SecureString$env:RDP_PASSWORD -AsPlainText -Force
         if (-not (Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue)) {
-            New-LocalUser -Name $env:RDP_USERNAME -Password $secPass -AccountNeverExpires -PasswordNeverExpires | Out-Null
+            New-LocalUser -Name $env:RDP_USERNAME -Password$secPass -AccountNeverExpires -PasswordNeverExpires | Out-Null
             Add-LocalGroupMember -Group "Administrators" -Member $env:RDP_USERNAME
             Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
         }
     }
 
     # ====================================================================
-    # REGISTRY EXPORTER SCHEDULED TASK
+    # REGISTRY EXPORTER SCHEDULED TASK (NO FOREACH)
     # ====================================================================
     Write-Log "Configuring Remote Registry Exporter Task..." "INFO"
-    $exporterPs1 = Join-Path $workspacePath "System\StateExporter.ps1"
+    $exporterPs1 = Join-Path$workspacePath "System\StateExporter.ps1"
     
-    $eLines = @()
-    $eLines += "`$softwareFile = `"$workspacePath\System\software.json`""
+    $eLines = @()$eLines += "`$softwareFile = `"$workspacePath\System\software.json`""
     $eLines += "`$regState = `"$workspacePath\State\Registry`""
     $eLines += "if (-not (Test-Path `$regState)) { New-Item -ItemType Directory -Path `$regState -Force | Out-Null }"
     $eLines += "if (Test-Path `$softwareFile) {"
     $eLines += "    `$rawSw = Get-Content -Path `$softwareFile -Raw"
     $eLines += "    `$swData = ConvertFrom-Json -InputObject `$rawSw"
     $eLines += "    if (`$swData.state_management.registry_keys) {"
-    $eLines += "        foreach (`$key in `$swData.state_management.registry_keys) {"
+    $eLines += "        `$keys = `$swData.state_management.registry_keys"
+    $eLines += "        for (`$i = 0; `$i -lt `$keys.Count; `$i++) {"
+    $eLines += "            `$key = `$keys[`$i]"
     $eLines += "            `$safeName = `$key -replace '[\\/]', '_'"
     $eLines += "            `$regFile = `"`$regState\`$safeName.reg`""
     $eLines += "            Start-Process `"reg.exe`" -ArgumentList `"export `\`"`$key`\`" `\`"`$regFile`\`" /y`" -Wait -WindowStyle Hidden"
@@ -318,7 +326,7 @@ try {
     Start-Process -FilePath $aria2Exe -ArgumentList$ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" \vert{} Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 11.7 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 11.8 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
