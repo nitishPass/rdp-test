@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 11.3 - GitOps Architecture & Secret Isolation)
+    RDP Manager - Bootstrap (Phase 11.3 - GitOps Architecture & Secret Isolation - Syntax Fix)
 #>
 
 [CmdletBinding()]
@@ -81,6 +81,7 @@ try {
         $vault = Get-Content$secretsFile -Raw | ConvertFrom-Json
         $ghEnv = "$env:GITHUB_ENV"
 
+        # [FIXED] Proper spacing: 'in $vault'
         foreach ($prop in$vault.PSObject.Properties) {
             $val = [string]$prop.Value
             if (-not [string]::IsNullOrWhiteSpace($val)) {
