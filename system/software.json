@@ -1,0 +1,72 @@
+{
+  "state_management": {
+    "registry_keys": [
+      "HKCU\\Software\\DownloadManager",
+      "HKCU\\Software\\Notepad++"
+    ],
+    "appdata_folders": [
+      "Roaming\\IDM",
+      "Roaming\\Notepad++",
+      "Local\\Google\\Chrome\\User Data"
+    ]
+  },
+  "cleanup_paths": [
+    "C:\\ghcup",
+    "C:\\rtools45",
+    "C:\\Julia",
+    "C:\\Strawberry",
+    "C:\\Miniconda",
+    "C:\\mingw64",
+    "C:\\mingw32",
+    "C:\\msys64",
+    "C:\\tools\\php",
+    "C:\\tools\\kotlinc",
+    "C:\\vcpkg",
+    "C:\\SeleniumWebDrivers",
+    "C:\\selenium",
+    "C:\\Android",
+    "C:\\hostedtoolcache",
+    "C:\\Modules",
+    "C:\\actionarchivecache",
+    "C:\\ProgramData\\Docker",
+    "C:\\Program Files\\Microsoft Visual Studio",
+    "C:\\Program Files (x86)\\Microsoft Visual Studio",
+    "C:\\Program Files (x86)\\Android",
+    "C:\\Program Files (x86)\\Windows Kits",
+    "C:\\Program Files (x86)\\Microsoft SDKs",
+    "C:\\Program Files\\dotnet",
+    "C:\\Program Files (x86)\\dotnet",
+    "C:\\Program Files\\Azure Cosmos DB Emulator",
+    "C:\\Program Files\\LLVM",
+    "C:\\Program Files\\MongoDB",
+    "C:\\Program Files\\PostgreSQL",
+    "C:\\Program Files\\Unity Hub",
+    "C:\\Program Files\\Microsoft Service Fabric",
+    "C:\\Program Files\\MySQL",
+    "C:\\WindowsAzure",
+    "C:\\Program Files\\OpenSSL",
+    "C:\\Program Files\\Amazon",
+    "C:\\Program Files\\Microsoft SQL Server",
+    "C:\\Program Files\\R",
+    "C:\\Program Files\\mongosh",
+    "C:\\Program Files\\CMake",
+    "C:\\Program Files (x86)\\Reference Assemblies",
+    "C:\\Program Files (x86)\\Microsoft Analysis Services",
+    "C:\\Program Files (x86)\\WiX Toolset v3.14",
+    "C:\\Program Files (x86)\\sbt",
+    "C:\\PostgreSQL"
+  ],
+  "packages": [
+    { "name": "Visual Studio Code", "id": "vscode", "enabled": true, "category": "Development" },
+    { "name": "Python 3", "id": "python", "enabled": true, "category": "Development" },
+    { "name": "Node.js LTS", "id": "nodejs-lts", "enabled": true, "category": "Development" },
+    { "name": "Ollama (Local AI Engine)", "id": "ollama", "enabled": true, "category": "AI" },
+    { "name": "Nmap (Network Scanner)", "id": "nmap", "enabled": true, "category": "Cybersecurity" },
+    { "name": "WizTree", "id": "wiztree", "enabled": true, "category": "Utilities" },
+    { "name": "Internet Download Manager", "id": "internet-download-manager", "enabled": true, "category": "Utilities" },
+    { "name": "7-Zip", "id": "7zip", "enabled": true, "category": "Utilities" },
+    { "name": "Notepad++", "id": "notepadplusplus", "enabled": true, "category": "Utilities" },
+    { "name": "VLC Media Player", "id": "vlc", "enabled": true, "category": "Utilities" },
+    { "name": "Sysinternals Suite", "id": "sysinternals", "enabled": true, "category": "Utilities" }
+  ]
+}
