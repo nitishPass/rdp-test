@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 11.3 - GitOps Architecture & Secret Isolation - Syntax Fix)
+    RDP Manager - Bootstrap (Phase 11.4 - Absolute Syntax Correction)
 #>
 
 [CmdletBinding()]
@@ -73,7 +73,7 @@ try {
     }
 
     # ====================================================================
-    # THE SECURE VAULT UNLOCK (secrets.json is explicitly read here)
+    # THE SECURE VAULT UNLOCK
     # ====================================================================
     $secretsFile = Join-Path$systemPath "secrets.json"
     if (Test-Path $secretsFile) {
@@ -81,9 +81,10 @@ try {
         $vault = Get-Content$secretsFile -Raw | ConvertFrom-Json
         $ghEnv = "$env:GITHUB_ENV"
 
-        # [FIXED] Proper spacing: 'in $vault'
-        foreach ($prop in$vault.PSObject.Properties) {
-            $val = [string]$prop.Value
+        # [REWRITTEN] The variable assignments are isolated to prevent syntax collision.
+        $vaultProperties =$vault.PSObject.Properties
+        foreach ($item in$vaultProperties) {
+            $val = [string]$item.Value
             if (-not [string]::IsNullOrWhiteSpace($val)) {
                 $cleanVal =$val.Trim()
                 Write-Host "::add-mask::$cleanVal"
@@ -343,7 +344,7 @@ if (Test-Path $softwareFile) {
     Start-Process -FilePath $aria2Exe -ArgumentList$ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" \vert{} Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 11.3 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 11.4 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
