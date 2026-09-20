@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    RDP Manager - Bootstrap (Phase 11.5 - UI Parser Bug Fix)
+    RDP Manager - Bootstrap (Phase 11.6 - Markdown/Parser Proof Edition)
 #>
 
 [CmdletBinding()]
@@ -115,152 +115,148 @@ try {
     $restorePs1 = "$desktopPath\03_StateRestore.ps1"
     $startupVbs = "$startupPath\00_Init_RDP.vbs"
 
-    # RED TERMINAL
-    $debloatContent = @'$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 1/3 - The Great Debloat"
-$Host.UI.RawUI.BackgroundColor = "DarkRed"
-Clear-Host
-Write-Host "================================================================" -ForegroundColor White
-Write-Host "   RECLAIMING C: DRIVE SPACE (ADMINISTRATOR)                    " -ForegroundColor White
-Write-Host "================================================================`n" -ForegroundColor White
+    # ARRAY WRITER FOR RED TERMINAL (Parser Proof)
+    $debloatLines = @(
+        '$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 1/3 - The Great Debloat"'
+        '$Host.UI.RawUI.BackgroundColor = "DarkRed"'
+        'Clear-Host'
+        'Write-Host "================================================================" -ForegroundColor White'
+        'Write-Host "   RECLAIMING C: DRIVE SPACE (ADMINISTRATOR)                    " -ForegroundColor White'
+        'Write-Host "================================================================`n" -ForegroundColor White'
+        '$softwareFile = "{WORKSPACE_PATH}\System\software.json"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        'if (Test-Path $softwareFile) {'
+        '    $rawSw = Get-Content -Path $softwareFile -Raw'
+        '    $swData = ConvertFrom-Json -InputObject $rawSw'
+        '    $totalCleaned = 0'
+        '    $paths = $swData.cleanup_paths'
+        '    if ($paths) {'
+        '        for ($i = 0; $i -lt $paths.Count; $i++) {'
+        '            $junk = $paths[$i]'
+        '            if (Test-Path $junk) {'
+        '                Write-Host " [X] Obliterating $junk..." -ForegroundColor Yellow'
+        '                $null = Start-Process "cmd.exe" -ArgumentList "/c rmdir /s /q `"$junk`"" -Wait -WindowStyle Hidden'
+        '                $totalCleaned++'
+        '            }'
+        '        }'
+        '    }'
+        '    Write-Host "`n[+] Cleanup Complete! Removed $totalCleaned bloat directories." -ForegroundColor Green'
+        '}'
+        'Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White'
+        'Start-Sleep -Seconds 5'
+        '$null = Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
+        'Stop-Process -Id $PID'
+    )
+    Set-Content -Path $debloatPs1 -Value $debloatLines
 
-$softwareFile = "{WORKSPACE_PATH}\System\software.json"
-if (Test-Path $softwareFile) {
-    $rawSw = Get-Content -Path $softwareFile -Raw
-    $swData = ConvertFrom-Json -InputObject $rawSw
-    $totalCleaned = 0
-    $paths = $swData.cleanup_paths
-    if ($paths) {
-        for ($i = 0; $i -lt $paths.Count; $i++) {
-            $junk = $paths[$i]
-            if (Test-Path $junk) {
-                Write-Host " [X] Obliterating $junk..." -ForegroundColor Yellow
-                $null = Start-Process "cmd.exe" -ArgumentList "/c rmdir /s /q `"$junk`"" -Wait -WindowStyle Hidden
-                $totalCleaned++
-            }
-        }
-    }
-    Write-Host "`n[+] Cleanup Complete! Removed $totalCleaned bloat directories." -ForegroundColor Green
-}
-Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White
-Start-Sleep -Seconds 5
-$null = Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
-Stop-Process -Id $PID
-'@
-    $debloatContent = $debloatContent -replace '\{WORKSPACE_PATH\}', $workspacePath
-    Set-Content -Path $debloatPs1 -Value $debloatContent
+    # ARRAY WRITER FOR BLUE TERMINAL (Parser Proof)
+    $installLines = @(
+        '$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 2/3 - Software Installer"'
+        '$Host.UI.RawUI.BackgroundColor = "DarkBlue"'
+        'Clear-Host'
+        'Write-Host "================================================================" -ForegroundColor Cyan'
+        'Write-Host "   DEPLOYING FUTURE-PROOF TECH STACK (ADMINISTRATOR)            " -ForegroundColor White'
+        'Write-Host "================================================================`n" -ForegroundColor Cyan'
+        '$softwareFile = "{WORKSPACE_PATH}\System\software.json"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        'if (Test-Path $softwareFile) {'
+        '    $rawSw = Get-Content -Path$softwareFile -Raw'
+        '    $swData = ConvertFrom-Json -InputObject$rawSw'
+        '    $toInstall = @()'
+        '    $pkgs =$swData.packages'
+        '    if ($pkgs) {'
+        '        for ($i = 0; $i -lt $pkgs.Count; $i++) {'
+        '            $pkg = $pkgs[$i]'
+        '            if ($pkg.enabled -eq$true) { $toInstall +=$pkg.id }'
+        '        }'
+        '    }'
+        '    if ($toInstall.Count -gt 0) {'
+        '        $pkgString =$toInstall -join " "'
+        '        Write-Host "[+] Installing: $pkgString`n" -ForegroundColor Cyan'
+        '        $null = Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --confirm --force" -Wait -NoNewWindow'
+        '        Write-Host "`n[+] Software stack deployed!" -ForegroundColor Green'
+        '    }'
+        '}'
+        'Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor Cyan'
+        'Start-Sleep -Seconds 5'
+        '$null = Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
+        'Stop-Process -Id $PID'
+    )
+    Set-Content -Path $installPs1 -Value $installLines
 
-    # BLUE TERMINAL
-    $installContent = @'
-$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 2/3 - Software Installer"
-$Host.UI.RawUI.BackgroundColor = "DarkBlue"
-Clear-Host
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "   DEPLOYING FUTURE-PROOF TECH STACK (ADMINISTRATOR)            " -ForegroundColor White
-Write-Host "================================================================`n" -ForegroundColor Cyan
+    # ARRAY WRITER FOR GREEN TERMINAL (Parser Proof)
+    $restoreLines = @(
+        '$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 3/3 - State Restoration"'
+        '$Host.UI.RawUI.BackgroundColor = "DarkGreen"'
+        'Clear-Host'
+        'Write-Host "================================================================" -ForegroundColor White'
+        'Write-Host "   RESTORING SOFTWARE STATE & APPDATA JUNCTIONS                 " -ForegroundColor White'
+        'Write-Host "================================================================`n" -ForegroundColor White'
+        '$softwareFile = "{WORKSPACE_PATH}\System\software.json"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        '$stateDir = "{WORKSPACE_PATH}\State"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        '$appDataState = "$stateDir\AppData"'
+        '$regState = "$stateDir\Registry"'
+        'if (-not (Test-Path $appDataState)) { $null = New-Item -ItemType Directory -Path$appDataState -Force }'
+        'if (-not (Test-Path $regState)) { $null = New-Item -ItemType Directory -Path$regState -Force }'
+        'if (Test-Path $softwareFile) {'
+        '    $rawSw = Get-Content -Path$softwareFile -Raw'
+        '    $swData = ConvertFrom-Json -InputObject$rawSw'
+        '    Write-Host "[1/2] Processing AppData Directory Junctions..." -ForegroundColor Yellow'
+        '    $folders =$swData.state_management.appdata_folders'
+        '    if ($folders) {'
+        '        for ($i = 0; $i -lt $folders.Count; $i++) {'
+        '            $folder = $folders[$i]'
+        '            $targetPath = Join-Path $appDataState$folder'
+        '            $linkPath = Join-Path "$env:USERPROFILE\AppData" $folder'
+        '            if (-not (Test-Path $targetPath)) { $null = New-Item -ItemType Directory -Path$targetPath -Force }'
+        '            if (Test-Path $linkPath) {'
+        '                $item = Get-Item -Path$linkPath -Force -ErrorAction SilentlyContinue'
+        '                if ($item -and$item.LinkType -ne "Junction") {'
+        '                    Write-Host "      [!] Merging existing data: $folder" -ForegroundColor Cyan'
+        '                    $null = Copy-Item -Path "$linkPath\*" -Destination $targetPath -Recurse -Force -ErrorAction SilentlyContinue'
+        '                    $null = Remove-Item -Path$linkPath -Recurse -Force -ErrorAction SilentlyContinue'
+        '                }'
+        '            }'
+        '            if (-not (Test-Path $linkPath)) {'
+        '                Write-Host "      [+] Linking $folder -> CloudVault" -ForegroundColor Green'
+        '                $null = New-Item -ItemType Junction -Path $linkPath -Target$targetPath -Force'
+        '            } else {'
+        '                Write-Host "      [v] Verified: $folder" -ForegroundColor DarkGray'
+        '            }'
+        '        }'
+        '    }'
+        '    Write-Host "`n[2/2] Restoring Registry Hives..." -ForegroundColor Yellow'
+        '    $keys = $swData.state_management.registry_keys'
+        '    if ($keys) {'
+        '        for ($i = 0; $i -lt $keys.Count; $i++) {'
+        '            $key = $keys[$i]'
+        '            $safeName = $key -replace ''[\\/]'', ''_'''
+        '            $regFile = "$regState\$safeName.reg"'
+        '            if (Test-Path $regFile) {'
+        '                Write-Host "      [+] Importing: $key" -ForegroundColor Green'
+        '                $null = Start-Process "reg.exe" -ArgumentList "import `"$regFile`"" -Wait -WindowStyle Hidden'
+        '            } else {'
+        '                Write-Host "      [-] No backup found for: $key" -ForegroundColor DarkGray'
+        '            }'
+        '        }'
+        '    }'
+        '}'
+        'Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White'
+        'Start-Sleep -Seconds 5'
+        '$null = Remove-Item -Path$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue'
+        'Stop-Process -Id $PID'
+    )
+    Set-Content -Path $restorePs1 -Value$restoreLines
 
-$softwareFile = "{WORKSPACE_PATH}\System\software.json"
-if (Test-Path $softwareFile) {$rawSw = Get-Content -Path $softwareFile -Raw$swData = ConvertFrom-Json -InputObject $rawSw$toInstall = @()
-    $pkgs =$swData.packages
-    if ($pkgs) {
-        for ($i = 0; $i -lt$pkgs.Count; $i++) {$pkg = $pkgs[$i]
-            if ($pkg.enabled -eq$true) { $toInstall +=$pkg.id }
-        }
-    }
-    
-    if ($toInstall.Count -gt 0) {
-        $pkgString =$toInstall -join " "
-        Write-Host "[+] Installing: $pkgString`n" -ForegroundColor Cyan
-        $null = Start-Process -FilePath "choco" -ArgumentList "install $pkgString -y --confirm --force" -Wait -NoNewWindow
-        Write-Host "`n[+] Software stack deployed!" -ForegroundColor Green
-    }
-}
-Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor Cyan
-Start-Sleep -Seconds 5
-$null = Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
-Stop-Process -Id $PID
-'@
-    $installContent = $installContent -replace '\{WORKSPACE_PATH\}', $workspacePath
-    Set-Content -Path $installPs1 -Value $installContent
-
-    # GREEN TERMINAL
-    $restoreContent = @'
-$Host.UI.RawUI.WindowTitle = "RDP INITIALIZATION: 3/3 - State Restoration"
-$Host.UI.RawUI.BackgroundColor = "DarkGreen"
-Clear-Host
-Write-Host "================================================================" -ForegroundColor White
-Write-Host "   RESTORING SOFTWARE STATE & APPDATA JUNCTIONS                 " -ForegroundColor White
-Write-Host "================================================================`n" -ForegroundColor White
-
-$softwareFile = "{WORKSPACE_PATH}\System\software.json"
-$stateDir = "{WORKSPACE_PATH}\State"
-$appDataState = "$stateDir\AppData"
-$regState = "$stateDir\Registry"
-
-if (-not (Test-Path $appDataState)) { $null = New-Item -ItemType Directory -Path$appDataState -Force }
-if (-not (Test-Path $regState)) { $null = New-Item -ItemType Directory -Path$regState -Force }
-
-if (Test-Path $softwareFile) {
-    $rawSw = Get-Content -Path$softwareFile -Raw
-    $swData = ConvertFrom-Json -InputObject$rawSw
-    
-    Write-Host "[1/2] Processing AppData Directory Junctions..." -ForegroundColor Yellow
-    $folders =$swData.state_management.appdata_folders
-    if ($folders) {
-        for ($i = 0; $i -lt$folders.Count; $i++) {$folder = $folders[$i]
-            $targetPath = Join-Path$appDataState $folder$linkPath = Join-Path "$env:USERPROFILE\AppData" $folder
-            
-            if (-not (Test-Path $targetPath)) { $null = New-Item -ItemType Directory -Path$targetPath -Force }
-            
-            if (Test-Path $linkPath) {
-                $item = Get-Item$linkPath -Force
-                if ($item.LinkType -ne "Junction") {
-                    Write-Host "      [!] Merging existing data: $folder" -ForegroundColor Cyan
-                    $null = Copy-Item -Path "$linkPath\*" -Destination $targetPath -Recurse -Force -ErrorAction SilentlyContinue
-                    $null = Remove-Item -Path$linkPath -Recurse -Force -ErrorAction SilentlyContinue
-                }
-            }
-            
-            if (-not (Test-Path $linkPath)) {
-                Write-Host "      [+] Linking $folder -> CloudVault" -ForegroundColor Green
-                $null = New-Item -ItemType Junction -Path $linkPath -Target$targetPath -Force
-            } else {
-                Write-Host "      [v] Verified: $folder" -ForegroundColor DarkGray
-            }
-        }
-    }
-
-    Write-Host "`n[2/2] Restoring Registry Hives..." -ForegroundColor Yellow
-    $keys = $swData.state_management.registry_keys
-    if ($keys) {
-        for ($i = 0; $i -lt $keys.Count; $i++) {
-            $key = $keys[$i]
-            $safeName = $key -replace '[\\/]', '_'
-            $regFile = "$regState\$safeName.reg"
-            if (Test-Path $regFile) {
-                Write-Host "      [+] Importing: $key" -ForegroundColor Green
-                $null = Start-Process "reg.exe" -ArgumentList "import `"$regFile`"" -Wait -WindowStyle Hidden
-            } else {
-                Write-Host "      [-] No backup found for: $key" -ForegroundColor DarkGray
-            }
-        }
-    }
-}
-Write-Host "`nTerminal closing and cleaning up in 5 seconds..." -ForegroundColor White
-Start-Sleep -Seconds 5
-$null = Remove-Item -Path$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
-Stop-Process -Id $PID
-'@
-    $restoreContent = $restoreContent -replace '\{WORKSPACE_PATH\}',$workspacePath
-    Set-Content -Path $restorePs1 -Value$restoreContent
-
-    $vbsContent = "Set UAC = CreateObject(""Shell.Application"")`r`n"
-    $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$debloatPs1"" & Chr(34), """", ""runas"", 1`r`n"
-    $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$installPs1"" & Chr(34), """", ""runas"", 1`r`n"
-    $vbsContent += "UAC.ShellExecute ""powershell.exe"", ""-NoProfile -ExecutionPolicy Bypass -File "" & Chr(34) & ""$restorePs1"" & Chr(34), """", ""runas"", 1`r`n"
-    $vbsContent += "Set objFSO = CreateObject(""Scripting.FileSystemObject"")`r`n"
-    $vbsContent += "strScript = Wscript.ScriptFullName`r`n"
-    $vbsContent += "objFSO.DeleteFile(strScript)`r`n"
-    Set-Content -Path $startupVbs -Value$vbsContent
+    # ARRAY WRITER FOR VBS LAUNCHER
+    $vbsLines = @(
+        'Set UAC = CreateObject("Shell.Application")'
+        'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File ""' + $debloatPs1 + '""", "", "runas", 1'
+        'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File ""' + $installPs1 + '""", "", "runas", 1'
+        'UAC.ShellExecute "powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File ""' + $restorePs1 + '""", "", "runas", 1'
+        'Set objFSO = CreateObject("Scripting.FileSystemObject")'
+        'strScript = Wscript.ScriptFullName'
+        'objFSO.DeleteFile(strScript)'
+    )
+    Set-Content -Path $startupVbs -Value$vbsLines
 
     $mountVbs = Join-Path$systemPath "mount.vbs"
     $unmountVbs = Join-Path$systemPath "unmount.vbs"
@@ -284,24 +280,27 @@ Stop-Process -Id $PID
 
     Write-Log "Configuring Remote Registry Exporter Task..." "INFO"
     $exporterPs1 = Join-Path$systemPath "StateExporter.ps1"
-    $exporterContent = @'$softwareFile = "{WORKSPACE_PATH}\System\software.json"
-$regState = "{WORKSPACE_PATH}\State\Registry"
-if (-not (Test-Path $regState)) { $null = New-Item -ItemType Directory -Path$regState -Force }
-if (Test-Path $softwareFile) {
-    $rawSw = Get-Content -Path$softwareFile -Raw
-    $swData = ConvertFrom-Json -InputObject$rawSw
-    $keys =$swData.state_management.registry_keys
-    if ($keys) {
-        for ($i = 0; $i -lt$keys.Count; $i++) {$key = $keys[$i]
-            $safeName =$key -replace '[\\/]', '_'
-            $regFile = "$regState\$safeName.reg"
-            $null = Start-Process "reg.exe" -ArgumentList "export `"$key`" `"$regFile`" /y" -Wait -WindowStyle Hidden
-        }
-    }
-}
-'@
-    $exporterContent = $exporterContent -replace '\{WORKSPACE_PATH\}',$workspacePath
-    Set-Content -Path $exporterPs1 -Value $exporterContent$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$exporterPs1`""
+    
+    # ARRAY WRITER FOR EXPORTER
+    $exporterLines = @(
+        '$softwareFile = "{WORKSPACE_PATH}\System\software.json"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        '$regState = "{WORKSPACE_PATH}\State\Registry"'.Replace('{WORKSPACE_PATH}', $workspacePath)
+        'if (-not (Test-Path $regState)) { $null = New-Item -ItemType Directory -Path$regState -Force }'
+        'if (Test-Path $softwareFile) {'
+        '    $rawSw = Get-Content -Path$softwareFile -Raw'
+        '    $swData = ConvertFrom-Json -InputObject$rawSw'
+        '    $keys =$swData.state_management.registry_keys'
+        '    if ($keys) {'
+        '        for ($i = 0; $i -lt $keys.Count; $i++) {'
+        '            $key = $keys[$i]'
+        '            $safeName =$key -replace ''[\\/]'', ''_'''
+        '            $regFile = "$regState\$safeName.reg"'
+        '            $null = Start-Process "reg.exe" -ArgumentList "export `"$key`" `"$regFile`" /y" -Wait -WindowStyle Hidden'
+        '        }'
+        '    }'
+        '}'
+    )
+    Set-Content -Path $exporterPs1 -Value $exporterLines$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$exporterPs1`""
     $principal = New-ScheduledTaskPrincipal -UserId $env:RDP_USERNAME -LogonType Interactive -RunLevel Highest$task = New-ScheduledTask -Action $action -Principal$principal
     $null = Register-ScheduledTask -TaskName "RDPStateExport" -InputObject $task -Force
 
@@ -329,7 +328,7 @@ if (Test-Path $softwareFile) {
     $null = Start-Process -FilePath $aria2Exe -ArgumentList$ariaArgs -WindowStyle Hidden
 
     "WORKSPACE_ROOT=$workspacePath" \vert{} Out-File -FilePath $env:GITHUB_ENV -Append
-    Write-Log "Phase 11.5 Bootstrap Complete." "SUCCESS"
+    Write-Log "Phase 11.6 Bootstrap Complete." "SUCCESS"
     
     $global:LASTEXITCODE = 0
 
