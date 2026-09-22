@@ -86,6 +86,31 @@ try {
         $env:RDP_PASSWORD       = $vault.rdp_password.Trim()
         $env:GH_TOKEN           = $vault.gh_token.Trim()
 
+        # RDP credential selection:
+        # default -> existing CloudVault System\secrets.json credentials
+        # custom  -> encrypted GitHub Actions repository secrets
+        $credentialMode = if ($env:RDP_CREDENTIAL_MODE) { $env:RDP_CREDENTIAL_MODE.Trim().ToLowerInvariant() } else { "default" }
+
+        if ($credentialMode -eq "custom") {
+            if ([string]::IsNullOrWhiteSpace($env:RDP_CUSTOM_USERNAME) -or
+                [string]::IsNullOrWhiteSpace($env:RDP_CUSTOM_PASSWORD)) {
+                throw "RDP_CREDENTIAL_MODE=custom, but RDP_CUSTOM_USERNAME/RDP_CUSTOM_PASSWORD are not available."
+            }
+
+            $env:RDP_USERNAME = $env:RDP_CUSTOM_USERNAME.Trim()
+            $env:RDP_PASSWORD = $env:RDP_CUSTOM_PASSWORD
+
+            Write-Host "::add-mask::$($env:RDP_USERNAME)"
+            Write-Host "::add-mask::$($env:RDP_PASSWORD)"
+            Write-Log "Using custom RDP credentials from GitHub repository secrets." "SUCCESS"
+        }
+        elseif ($credentialMode -eq "default") {
+            Write-Log "Using existing default RDP credentials from CloudVault." "INFO"
+        }
+        else {
+            throw "Unsupported RDP_CREDENTIAL_MODE: $credentialMode"
+        }
+
         "TELEGRAM_BOT_TOKEN=$($env:TELEGRAM_BOT_TOKEN)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
         "TELEGRAM_CHAT_ID=$($env:TELEGRAM_CHAT_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
         "TELEGRAM_ADMIN_ID=$($env:TELEGRAM_ADMIN_ID)" | Out-File -FilePath $ghEnv -Append -Encoding utf8
