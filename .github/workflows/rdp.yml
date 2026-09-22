@@ -6,7 +6,16 @@ on:
       is_relay:
         description: 'Is this an automated relay run?'
         required: false
-        default: 'false'
+        type: boolean
+        default: false
+      rdp_credential_mode:
+        description: 'RDP credentials: use existing default or custom GitHub repository secrets'
+        required: true
+        type: choice
+        options:
+          - default
+          - custom
+        default: default
 
 jobs:
   workspace:
@@ -15,7 +24,10 @@ jobs:
 
     env:
       RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
-      IS_RELAY: ${{ github.event.inputs.is_relay }}
+      IS_RELAY: ${{ inputs.is_relay }}
+      RDP_CREDENTIAL_MODE: ${{ inputs.rdp_credential_mode }}
+      RDP_CUSTOM_USERNAME: ${{ secrets.RDP_CUSTOM_USERNAME }}
+      RDP_CUSTOM_PASSWORD: ${{ secrets.RDP_CUSTOM_PASSWORD }}
       GITHUB_REPO: ${{ github.repository }}
 
     steps:
